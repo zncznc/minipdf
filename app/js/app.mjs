@@ -24,6 +24,9 @@ const S = {
   organize: false,
   selectedPages: new Set(),
   lastSignature: null,
+  assetRatio: 2.6,
+  fontSize: 12,
+  eraseUnder: true,
   suggestions: [],
   panelTool: null,
   barPinned: false,
@@ -84,6 +87,9 @@ const viewer = new Viewer({
   getColor: () => S.color,
   getSignature: () => S.lastSignature,
   getImage: () => S.pendingImage,
+  getAssetRatio: () => S.assetRatio || 2.6,
+  getFontSize: () => S.fontSize || 12,
+  getErase: () => S.eraseUnder !== false,
   onEscape: () => setTool('select'),
 });
 
@@ -891,8 +897,19 @@ function setTool(tool) {
   openToolPanel(S.panelTool);
 }
 
-function updateAnnotBar() {
-  const bar = $('#annotBar');
+/** 改字号：只作用在选中的文本框上，顺手重算高度 */
+function applyFontSize() {
+  const d = active;
+  if (!d) return;
+  const a = d.annots.find((x) => x.id === viewer.selectedId && x.type === 'textbox');
+  if (!a) return;
+  a.fontSize = S.fontSize;
+  markDirty();
+  viewer.renderAnnotations();
+  setTimeout(() => viewer.syncTextboxHeights(), 40);
+}
+
+function updateAnnotBar() {  const bar = $('#annotBar');
   const show = !!active && (S.barPinned || S.tool !== 'select');
   bar.classList.toggle('hidden', !show);
 }
@@ -922,9 +939,8 @@ function renderAnnotBar() {
 
 async function handleToolButton(tool) {
   if (tool === 'sign' && !S.lastSignature) {
-    const sig = await signatureModal();
+    const sig = await pickSignature();
     if (!sig) return;
-    S.lastSignature = sig;
   }
   if (tool === 'image') {
     const img = await pickImage();
@@ -1028,8 +1044,8 @@ function openToolPanel(key) {
   } else if (key === 'fill') {
     body.append(h('p', { text: '表单字段会以蓝色输入框覆盖显示，改完保存即可写回原字段。签名支持手写与图片。' }));
     body.append(h('div', { class: 'row' },
-      h('button', { class: 'btn small primary', text: '手写签名…', onclick: async () => { const s = await signatureModal(); if (s) { S.lastSignature = s; setTool('sign'); } } }),
-      h('button', { class: 'btn small', text: '放置图片…', onclick: async () => { const im = await pickImage(); if (im) { S.pendingImage = im; setTool('image'); } } }),
+      h('button', { class: 'btn small primary', text: '手写签名…', onclick: async () => { const s = await pickSignature(); if (s) { setTool('sign'); toast('在页面上点一下放置签名'); } } }),
+      h('button', { class: 'btn small', text: '放置图片…', onclick: async () => { const im = await pickImage(); if (im) { S.pendingImage = im; setTool('image'); toast('在页面上点一下放置图片'); } } }),
     ));
     body.append(h('p', { class: 'muted', text: '选好签名或图片后，在页面上点一下放置；可在选择工具下拖动位置，Delete 删除。' }));
     body.append(h('div', { class: 'hr' }));
@@ -1072,11 +1088,50 @@ function openToolPanel(key) {
     body.append(h('label', { class: 'fld' }, '每份页数', n));
     body.append(h('button', { class: 'btn primary', text: '拆分并保存…', onclick: () => splitPdf(Number(n.value)) }));
   } else if (key === 'edit') {
-    body.append(h('p', { text: 'PDF 没有「重排文本」的概念：这里的编辑是覆盖式添加。文字会以位图写入页面，保证中文不乱码。' }));
+    body.append(h('p', { text: 'PDF 没有「重排文本」的概念，这里的编辑是覆盖式添加：文字以位图写进页面，中文不乱码、打印位置一致，但不会删掉底下的原文。' }));
+    const chips = h('div', { class: 'chips' });
+    for (const s of [10, 12, 14, 18, 24]) {
+      chips.append(h('button', {
+        class: 'chip' + (S.fontSize === s ? ' active' : ''), text: s + 'pt',
+        onclick: () => { S.fontSize = s; applyFontSize(); openToolPanel('edit'); },
+      }));
+    }
+    body.append(h('label', { class: 'fld' }, '字号', chips));
     body.append(h('div', { class: 'row' },
-      h('button', { class: 'btn small', text: '添加文本', onclick: async () => { setTool('textbox'); toast('在页面上点一下即可输入'); } }),
-      h('button', { class: 'btn small', text: '添加图片', onclick: async () => { const im = await pickImage(); if (im) { S.pendingImage = im; setTool('image'); } } }),
+      h('button', { class: 'btn small primary', text: '添加文本', onclick: () => { setTool('textbox'); toast('在页面上点一下，直接打字'); } }),
+      h('button', { class: 'btn small', text: '添加图片', onclick: async () => { const im = await pickImage(); if (im) { S.pendingImage = im; setTool('image'); toast('在页面上点一下放置图片'); } } }),
     ));
+    body.append(h('div', { class: 'row' },
+      h('button', { class: 'btn small', text: '手写签名', onclick: async () => { const s = await pickSignature(); if (s) { setTool('sign'); toast('在页面上点一下放置签名'); } } }),
+    ));
+    const tbSel = d ? d.annots.find((x) => x.id === viewer.selectedId && x.type === 'textbox') : null;
+    if (tbSel) {
+      const wInput = h('input', {
+        type: 'number', min: '60', max: '560', step: '10',
+        value: String(Math.round(tbSel.rects[0][2] - tbSel.rects[0][0])),
+        style: { width: '86px' },
+      });
+      wInput.addEventListener('change', () => {
+        const v = clamp(Number(wInput.value) || 190, 60, 560);
+        tbSel.rects[0][2] = Math.min(tbSel.rects[0][0] + v, (d.pages[tbSel.page - 1]?.w || 595) - 4);
+        markDirty();
+        viewer.renderAnnotations();
+        setTimeout(() => viewer.syncTextboxHeights(), 40);
+      });
+      body.append(h('label', { class: 'fld' }, '选中文本框的宽度（pt）', wInput));
+    }
+    body.append(h('div', { class: 'hr' }));
+    const erase = h('input', { type: 'checkbox' });
+    erase.checked = S.eraseUnder !== false;
+    erase.addEventListener('change', () => {
+      S.eraseUnder = erase.checked;
+      const a = active?.annots.find((x) => x.id === viewer.selectedId && x.type === 'textbox');
+      if (a) { a.erase = erase.checked; markDirty(); viewer.renderAnnotations(); }
+      toast(erase.checked ? '文本框会盖住底下的原文（白底）' : '文本框透明，底下的原文会透出来');
+    });
+    body.append(h('label', { class: 'fld row', style: { alignItems: 'center', gap: '8px', flexDirection: 'row' } },
+      erase, h('span', { text: '盖住底下的原文（白底）' })));
+    body.append(h('p', { class: 'muted', style: { fontSize: '11.5px' }, text: '选择工具下：点文字框可直接改字，拖动可挪位置，方向键微调，Delete 删除。保存后文字变成页面内容，不再能改。' }));
   } else if (key === 'props') {
     if (!d) { body.append(h('p', { text: '未打开文档' })); return; }
     const title = h('input', { type: 'text', value: d.meta.Title || '' });
@@ -1384,8 +1439,17 @@ function modal({ title, iconName = 'info', body, actions = [], wide = false, onM
   });
 }
 
-function pickImage() {
-  return new Promise((resolve) => {
+function imageRatio(dataUrl) {
+  return new Promise((res) => {
+    const im = new Image();
+    im.onload = () => res((im.naturalWidth || 1) / (im.naturalHeight || 1));
+    im.onerror = () => res(2.6);
+    im.src = dataUrl;
+  });
+}
+
+async function pickImage() {
+  const dataUrl = await new Promise((resolve) => {
     const input = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', style: { display: 'none' } });
     input.addEventListener('change', async () => {
       const f = input.files && input.files[0];
@@ -1396,6 +1460,44 @@ function pickImage() {
     document.body.append(input);
     input.click();
   });
+  if (!dataUrl) return null;
+  S.assetRatio = await imageRatio(dataUrl);
+  return dataUrl;
+}
+
+/** 手写签名：裁掉四周空白，返回 dataURL 与宽高比，放上去不会一片白边 */
+async function pickSignature() {
+  const sig = await signatureModal();
+  if (!sig) return null;
+  S.lastSignature = sig.dataUrl;
+  S.assetRatio = sig.ratio;
+  return sig;
+}
+
+/** 把画布上的笔迹裁到实际范围（四周留一点边），返回 PNG 与宽高比 */
+function trimInk(canvas) {
+  const w = canvas.width, h = canvas.height;
+  const data = canvas.getContext('2d').getImageData(0, 0, w, h).data;
+  let minX = w, minY = h, maxX = -1, maxY = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (data[(y * w + x) * 4 + 3] > 10) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < 0) return { dataUrl: canvas.toDataURL('image/png'), ratio: 560 / 170 };
+  const pad = 6;
+  minX = Math.max(0, minX - pad); minY = Math.max(0, minY - pad);
+  maxX = Math.min(w - 1, maxX + pad); maxY = Math.min(h - 1, maxY + pad);
+  const out = document.createElement('canvas');
+  out.width = maxX - minX + 1;
+  out.height = maxY - minY + 1;
+  out.getContext('2d').drawImage(canvas, minX, minY, out.width, out.height, 0, 0, out.width, out.height);
+  return { dataUrl: out.toDataURL('image/png'), ratio: out.width / out.height };
 }
 
 function signatureModal() {
@@ -1436,10 +1538,9 @@ function signatureModal() {
         h('button', { class: 'btn', text: '取消', onclick: () => { mask.remove(); resolve(null); } }),
         h('button', { class: 'btn primary', text: '使用签名', onclick: () => {
           if (!dirty) return toast('先写一个签名', 'err');
-          // 裁掉空白
-          const data = canvas.toDataURL('image/png');
+          const out = trimInk(canvas);
           mask.remove();
-          resolve(data);
+          resolve(out);
         } }),
       ),
     );
@@ -1702,7 +1803,7 @@ async function showAbout() {
     title: '关于 MiniPDF',
     iconName: 'info',
     body: h('div', {},
-      h('p', { html: '<b>MiniPDF 1.0.0</b> — 用同一套界面复刻 Acrobat 的阅读、注释、页面编排与填写签名工作流。' }),
+      h('p', { html: '<b>MiniPDF 1.0.1</b> — 用同一套界面复刻 Acrobat 的阅读、注释、页面编排与填写签名工作流。' }),
       h('p', { class: 'muted', text: `Electron ${info.electron} · Chromium ${info.chrome} · pdf.js 4.10 · pdf-lib 1.17` }),
       h('p', { class: 'muted', text: 'PDF 渲染由 pdf.js 完成，写回由 pdf-lib 完成；所有处理都在本机。' }),
       h('p', { class: 'muted', text: `Agent 桥：http://127.0.0.1:${info.bridgePort || 7857}/current_view` }),
@@ -1799,7 +1900,7 @@ function bindUI() {
   }, 520));
 
   $('#clearRecent').addEventListener('click', async () => { await P.recentClear(); renderRecent(); });
-  $('#appVer').textContent = 'MiniPDF 1.0.0 · pdf.js + pdf-lib';
+  $('#appVer').textContent = 'MiniPDF 1.0.1 · pdf.js + pdf-lib';
 
   // 拖放文件
   let dragDepth = 0;
@@ -2050,6 +2151,169 @@ window.__minipdfSmoke = async (scene = 'read') => {
       out.activeName = active.name;
       out.names = S.docs.map((d) => d.name);
       out.steps.push('multi');
+    } else if (scene === 'edit' || scene === 'edit-saved' || scene === 'edit-zoom' || scene === 'edit-clean') {
+      const clean = scene === 'edit-clean';
+      // 1) 文本框：从工具条上的按钮点进去，再点页面
+      openToolPanel('annotate');
+      const tbBtn = document.querySelector('#annotBar button[data-tool="textbox"]');
+      out.barButton = !!tbBtn;
+      if (tbBtn) tbBtn.click(); else setTool('textbox');
+      await new Promise((r) => setTimeout(r, 150));
+      out.toolAfterClick = S.tool;
+      const pageEl = document.querySelector('.page');
+      const pr = pageEl.getBoundingClientRect();
+      const cx = pr.left + 140, cy = pr.top + (clean ? 470 : 200);
+      const pe = (type) => new PointerEvent(type, {
+        bubbles: true, cancelable: true, clientX: cx, clientY: cy,
+        pointerId: 1, pointerType: 'mouse', isPrimary: true,
+      });
+      pageEl.dispatchEvent(pe('pointerdown'));
+      pageEl.dispatchEvent(pe('pointerup'));
+      await new Promise((r) => setTimeout(r, 250));
+      out.boxCreated = active.annots.filter((a) => a.type === 'textbox').length;
+      const box = document.querySelector('.annot.textbox');
+      out.boxInDom = !!box;
+      if (box) {
+        box.focus();
+        box.textContent = '编辑功能测试：第一行中文，第二行用来验证自动换行与高度增长，第三行再长一点看看会不会被裁掉。';
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+        out.focused = document.activeElement === box;
+        // 在框里按退格只能删字，不能把整个框删掉
+        const before = active.annots.filter((a) => a.type === 'textbox').length;
+        box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
+        out.backspaceKeptBox = active.annots.filter((a) => a.type === 'textbox').length === before;
+      }
+      const tb = active.annots.find((a) => a.type === 'textbox');
+      // 回车在 contenteditable 里是 <div>，取文本要还原成 \n
+      if (box) {
+        box.innerHTML = '第一行文字<div>第二行：按回车换行</div><div>第三行</div>';
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      out.multiLine = tb ? tb.content.split('\n').length : 0;
+      out.textContent = tb ? tb.content.slice(0, 12) : null;
+      out.textRect = tb ? tb.rects[0].map((v) => +v.toFixed(1)) : null;
+      out.grewHeight = tb ? +(tb.rects[0][3] - tb.rects[0][1]).toFixed(1) : 0;
+
+      // 2) 签名：宽高比不能被拉扁
+      if (clean) { out.signRatio = null; }
+      const sc = document.createElement('canvas');
+      sc.width = 240; sc.height = 80;
+      const sctx = sc.getContext('2d');
+      sctx.strokeStyle = '#111'; sctx.lineWidth = 5;
+      sctx.beginPath(); sctx.moveTo(20, 55); sctx.quadraticCurveTo(90, 10, 220, 45); sctx.stroke();
+      if (!clean) {
+      S.lastSignature = sc.toDataURL('image/png');
+      S.assetRatio = 3;
+      setTool('sign');
+      pageEl.dispatchEvent(pe('pointerdown'));
+      pageEl.dispatchEvent(pe('pointerup'));
+      await new Promise((r) => setTimeout(r, 200));
+      }
+      const sg = active.annots.find((a) => a.type === 'sign');
+      out.signRatio = sg ? +((sg.rects[0][2] - sg.rects[0][0]) / (sg.rects[0][3] - sg.rects[0][1])).toFixed(2) : null;
+
+      // 2b) 图片：宽图 400x100 放上去应保持 4:1
+      const ic = document.createElement('canvas');
+      ic.width = 400; ic.height = 100;
+      const ictx = ic.getContext('2d');
+      ictx.fillStyle = '#1473e6'; ictx.fillRect(0, 0, 400, 100);
+      S.pendingImage = ic.toDataURL('image/png');
+      S.assetRatio = await imageRatio(S.pendingImage);
+      setTool('image');
+      pageEl.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: pr.left + 420, clientY: pr.top + 520, pointerId: 3, pointerType: 'mouse', isPrimary: true }));
+      pageEl.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: pr.left + 420, clientY: pr.top + 520, pointerId: 3, pointerType: 'mouse', isPrimary: true }));
+      await new Promise((r) => setTimeout(r, 200));
+      const im = active.annots.filter((a) => a.type === 'image').pop();
+      out.imageRatio = im ? +((im.rects[0][2] - im.rects[0][0]) / (im.rects[0][3] - im.rects[0][1])).toFixed(2) : null;
+
+      // 3) 选择工具下能选中文本框（不能被重建掉焦点）
+      setTool('select');
+      await new Promise((r) => setTimeout(r, 120));
+      const boxEl = document.querySelector('.annot.textbox');
+      if (boxEl) {
+        const br = boxEl.getBoundingClientRect();
+        const opts2 = {
+          bubbles: true, cancelable: true, clientX: br.left + 6, clientY: br.top + 6,
+          pointerId: 2, pointerType: 'mouse', isPrimary: true,
+        };
+        boxEl.dispatchEvent(new PointerEvent('pointerdown', opts2));
+        boxEl.dispatchEvent(new PointerEvent('pointerup', opts2));
+        out.selected = !!viewer.selectedId && viewer.selectedId === (tb && tb.id);
+        out.selectedClass = !!document.querySelector('.annot.textbox.selected');
+        out.delBadge = !!document.querySelector('.annot.textbox .del');
+      }
+
+      // 4) 保存后：文字变成页面里的图片，那块区域真的被画上了东西
+      const bytes = await ops.savePdf(active.bytes, active.annots.filter((a) => !a.inFile), {}, {});
+      out.savedBytes = bytes.length;
+      const re = await loadPdf(bytes);
+      const ld = await window.PDFLib.PDFDocument.load(bytes);
+      const res = ld.getPages()[0].node.Resources();
+      const xo = res && res.lookup(window.PDFLib.PDFName.of('XObject'));
+      out.imageXObjects = xo ? xo.keys().length : 0;
+      const shot = await renderPageOffscreen(re.pdf, 1, 2);
+      const sctx2 = shot.getContext('2d');
+      const pageOne = await re.pdf.getPage(1);
+      const vp2 = pageOne.getViewport({ scale: 2 });
+      let dark = 0;
+      if (tb) {
+        const rr = vp2.convertToViewportRectangle(tb.rects[0]);
+        const x0 = Math.max(0, Math.floor(Math.min(rr[0], rr[2])));
+        const y0 = Math.max(0, Math.floor(Math.min(rr[1], rr[3])));
+        const ww = Math.max(1, Math.ceil(Math.abs(rr[2] - rr[0])));
+        const hh2 = Math.max(1, Math.ceil(Math.abs(rr[3] - rr[1])));
+        const d2 = sctx2.getImageData(x0, y0, ww, hh2).data;
+        for (let i = 0; i < d2.length; i += 4) if (d2[i] < 120 && d2[i + 1] < 120 && d2[i + 2] < 120) dark++;
+      }
+      out.darkPixels = dark;
+      // 收窄宽度后高度应重新长高，而不是被裁
+      if (tb) {
+        const wide = tb.rects[0][3] - tb.rects[0][1];
+        tb.rects[0][2] = tb.rects[0][0] + 110;
+        viewer.renderAnnotations();
+        await new Promise((r) => setTimeout(r, 120));
+        viewer.syncTextboxHeights();
+        out.narrow = { wideHeight: +wide.toFixed(1), narrowHeight: +(tb.rects[0][3] - tb.rects[0][1]).toFixed(1) };
+      }
+      // 白底擦除的 A/B：同一块区域，带白底应该更少"原文的黑色像素"
+      const countDark = async (bts, rect) => {
+        const dd = await loadPdf(bts);
+        const shot2 = await renderPageOffscreen(dd.pdf, 1, 2);
+        const pg = await dd.pdf.getPage(1);
+        const v = pg.getViewport({ scale: 2 });
+        const rr = v.convertToViewportRectangle(rect);
+        const gx = Math.max(0, Math.floor(Math.min(rr[0], rr[2])));
+        const gy = Math.max(0, Math.floor(Math.min(rr[1], rr[3])));
+        const gw = Math.max(1, Math.ceil(Math.abs(rr[2] - rr[0])));
+        const gh = Math.max(1, Math.ceil(Math.abs(rr[3] - rr[1])));
+        const px = shot2.getContext('2d').getImageData(gx, gy, gw, gh).data;
+        let n = 0;
+        for (let i = 0; i < px.length; i += 4) if (px[i] < 120 && px[i + 1] < 120 && px[i + 2] < 120) n++;
+        return n;
+      };
+      if (tb) {
+        out.darkWithErase = await countDark(bytes, tb.rects[0]);
+        out.darkNoErase = await countDark(await ops.savePdf(active.bytes, [{ ...tb, erase: false }], {}, {}), tb.rects[0]);
+      }
+      out.steps.push('edit');
+      if (scene === 'edit-saved' || scene === 'edit-zoom' || scene === 'edit-clean') {
+        await openFromBytes(bytes, { name: 'edit-saved.pdf' });
+        await new Promise((r) => setTimeout(r, 900));
+        viewer.goToPage(1, { instant: true });
+        await new Promise((r) => setTimeout(r, 600));
+        if (scene === 'edit-zoom' || scene === 'edit-clean') {
+          viewer.applyScale('custom', 3, { keepAnchor: false });
+          await new Promise((r) => setTimeout(r, 1200));
+          if (tb) {
+            const pp = await active.pdf.getPage(1);
+            const vp3 = pp.getViewport({ scale: viewer.scale });
+            const q = vp3.convertToViewportRectangle(tb.rects[0]);
+            const el0 = viewer.pageEls[0];
+            viewer.viewerEl.scrollTop = Math.max(0, el0.offsetTop + Math.min(q[1], q[3]) - 40);
+          }
+        }
+        out.steps.push('edit-saved');
+      }
     } else if (scene === 'savedview') {
       S.silentNote = true;
       createAnnot({ page: 1, type: 'highlight', rects: [[72, 640, 520, 655], [72, 620, 300, 635]], color: '#ffe14d', content: '双行高亮' });
@@ -2126,6 +2390,11 @@ window.__minipdfSmoke = async (scene = 'read') => {
       btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 40, clientY: 12 }));
       await new Promise((r) => setTimeout(r, 400));
       out.steps.push('menu');
+    } else if (scene === 'edit-panel') {
+      openToolPanel('edit');
+      setTool('textbox');
+      await new Promise((r) => setTimeout(r, 400));
+      out.steps.push('edit-panel');
     } else if (scene === 'annotate-panel') {
       openToolPanel('annotate');
       setTool('highlight');

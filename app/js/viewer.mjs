@@ -3,7 +3,7 @@ import { getPageViewport, renderPage, renderTextLayer, getWidgets } from './engi
 import { icon } from './icons.mjs';
 
 const SEL_TOOLS = new Set(['highlight', 'underline', 'strikeout']);
-const DRAW_TOOLS = new Set(['rect', 'arrow', 'ink', 'note', 'freetext', 'sign', 'image', 'redact']);
+const DRAW_TOOLS = new Set(['rect', 'arrow', 'ink', 'note', 'freetext', 'textbox', 'sign', 'image', 'redact']);
 const COLOR_DEFAULT = '#ffe14d';
 
 export class Viewer {
@@ -38,11 +38,27 @@ export class Viewer {
     this.pagesEl.addEventListener('pointerup', (e) => this.onPointerUp(e));
     this.pagesEl.addEventListener('pointercancel', () => this.cancelDrag());
     this.viewerEl.addEventListener('keydown', (e) => {
+      const t = e.target;
+      // 正在文本框里打字 / 表单里输入时，Delete、方向键都不能当作"操作注释"
+      const typing = t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || ''));
+      if (e.key === 'Escape') {
+        this.cb.onEscape?.();
+        if (typing && t.blur) t.blur();
+        return;
+      }
+      if (typing) return;
       if ((e.key === 'Delete' || e.key === 'Backspace') && this.selectedId) {
         e.preventDefault();
         this.cb.onDeleteAnnot?.(this.selectedId);
+        return;
       }
-      if (e.key === 'Escape') this.cb.onEscape?.();
+      if (this.selectedId && /^Arrow(Left|Right|Up|Down)$/.test(e.key)) {
+        e.preventDefault();
+        const step = e.shiftKey ? 10 : 1;
+        const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
+        const dy = e.key === 'ArrowUp' ? step : e.key === 'ArrowDown' ? -step : 0;
+        this.nudge(this.selectedId, dx, dy);
+      }
     });
     window.addEventListener('resize', () => {
       clearTimeout(this._resizeT);
@@ -387,7 +403,7 @@ export class Viewer {
     if (this.tool === 'select' && !e.target.closest('.annot')) {
       if (this.selectedId) {
         this.selectedId = null;
-        this.renderAnnotations();
+        this.applySelection();
       }
     }
     if (!SEL_TOOLS.has(this.tool)) return;
@@ -429,9 +445,45 @@ export class Viewer {
     return out;
   }
 
+  /* 只改选中样式，不重建 DOM —— 否则文本框会在点击瞬间失焦，压根没法输入 */
+  applySelection() {
+    const all = this.pagesEl.querySelectorAll('.annot');
+    for (const el of all) {
+      const on = el.dataset.id === this.selectedId;
+      el.classList.toggle('selected', on);
+      let del = null;
+      for (const child of el.children) if (child.classList.contains('del')) del = child;
+      if (on && !del) {
+        el.append(h('button', {
+          class: 'del', html: icon('close', 10), title: '删除 (Delete)',
+          onclick: (ev) => { ev.stopPropagation(); this.cb.onDeleteAnnot?.(el.dataset.id); },
+        }));
+      } else if (!on && del) {
+        del.remove();
+      }
+    }
+  }
+
+  /* 改字号/宽度后重新量一遍文本框高度，避免保存时被裁 */
+  syncTextboxHeights() {
+    if (!this.doc) return;
+    let changed = false;
+    for (const el of this.pagesEl.querySelectorAll('.annot.textbox')) {
+      const pageEl = el.closest('.page');
+      const vp = pageEl && pageEl._vp;
+      const a = this.doc.annots.find((x) => x.id === el.dataset.id);
+      if (!a || !vp) continue;
+      const hpt = Math.max(12, el.scrollHeight / vp.scale);
+      if (Math.abs(hpt - (a.rects[0][3] - a.rects[0][1])) > 0.5) {
+        a.rects[0][1] = a.rects[0][3] - hpt;
+        changed = true;
+      }
+    }
+    if (changed) this.cb.onAnnotChanged?.();
+  }
+
   /* ── 绘制 ─────────────────────────────────────────────── */
-  pageAt(target) {
-    const el = target.closest ? target.closest('.page') : null;
+  pageAt(target) {    const el = target.closest ? target.closest('.page') : null;
     return el ? { el, idx: Number(el.dataset.page) } : null;
   }
 
@@ -452,10 +504,13 @@ export class Viewer {
     if (this.tool === 'select') {
       const annotEl = e.target.closest('.annot');
       if (annotEl) {
-        this.selectedId = annotEl.dataset.id;
-        this.renderAnnotations();
-        if (annotEl.dataset.type === 'textbox') return;
+        if (this.selectedId !== annotEl.dataset.id) {
+          this.selectedId = annotEl.dataset.id;
+          this.applySelection();
+        }
+        // 文本框 / 便签 / 图片都能拖动；单击文本框同时把光标放进去，不用再点第二下
         this.startAnnotMove(e, annotEl);
+        if (annotEl.dataset.type === 'textbox') annotEl.focus();
         return;
       }
       return;
@@ -473,11 +528,11 @@ export class Viewer {
     const d = this.drag;
     if (d.kind === 'annot-move') {
       const pr = d.el.getBoundingClientRect();
-      const dx = (e.clientX - d.startX) / pr.width;
-      const dy = (e.clientY - d.startY) / pr.height;
-      if (d.previewEl) d.previewEl.style.transform = `translate(${e.clientX - d.startX}px, ${e.clientY - d.startY}px)`;
-      d.dx = dx;
-      d.dy = dy;
+      const px = e.clientX - d.startX;
+      const py = e.clientY - d.startY;
+      d.el.style.transform = `translate(${px}px, ${py}px)`;
+      d.dx = px / pr.width;
+      d.dy = py / pr.height;
       return;
     }
     const p = this.localPoint(d.pageEl, e.clientX, e.clientY);
@@ -511,14 +566,26 @@ export class Viewer {
     const pageInfo = this.doc.pages[hit.idx];
     const base = { page, color: this.cb.getColor?.() || COLOR_DEFAULT, author: '我', ts: Date.now() };
 
-    if (tool === 'note' || tool === 'freetext' || tool === 'sign' || tool === 'image') {
-      const wPt = 18, hPt = 18;
+    if (tool === 'note' || tool === 'freetext' || tool === 'textbox' || tool === 'sign' || tool === 'image') {
+      const isText = tool === 'textbox' || tool === 'freetext';
+      // 图片/签名按原始宽高比放，不然手写字会被拉扁
+      const ratio = isText ? null : (this.cb.getAssetRatio?.() || 2.6);
+      const wPt = tool === 'note' ? 18 : isText ? 190 : 132;
+      const hPt = tool === 'note' ? 18 : isText ? (this.cb.getFontSize?.() || 12) * 1.7 : Math.max(10, wPt / ratio);
+      // 别让框跑到页面外面去
+      const pw = pageInfo?.w || 612;
+      const ph = pageInfo?.h || 792;
+      const x1 = clamp(pdfPt[0], 2, Math.max(2, pw - 24));
+      const y2 = clamp(pdfPt[1], 8, ph - 4);
+      const x2 = Math.min(x1 + wPt, pw - 4);
+      const y1 = Math.max(2, y2 - hPt);
       this.cb.onCreateAnnot?.({
         ...base,
-        type: tool === 'freetext' ? 'textbox' : tool,
-        rects: [[pdfPt[0], pdfPt[1] - hPt, pdfPt[0] + (tool === 'freetext' ? 180 : tool === 'sign' ? 120 : 20), pdfPt[1]]],
+        type: isText ? 'textbox' : tool,
+        rects: [[x1, y1, x2, y2]],
         content: '',
-        fontSize: 12,
+        fontSize: this.cb.getFontSize?.() || 12,
+        erase: isText ? this.cb.getErase?.() !== false : false,
         dataUrl: tool === 'sign' ? this.cb.getSignature?.() : tool === 'image' ? this.cb.getImage?.() : null,
         redact: false,
       });
@@ -596,7 +663,8 @@ export class Viewer {
 
   startAnnotMove(e, annotEl) {
     const a = this.doc.annots.find((x) => x.id === annotEl.dataset.id);
-    if (!a || a.inFile || !['note', 'textbox', 'image'].includes(a.type)) return;
+    // 手绘/箭头/图形不支持拖动；已经写进文件的也不再挪（字节里已有它）
+    if (!a || a.inFile || !['note', 'textbox', 'image', 'sign'].includes(a.type)) return;
     this.drag = {
       kind: 'annot-move', id: a.id, el: annotEl, startX: e.clientX, startY: e.clientY,
       orig: a.rects[0].slice(), pageEl: annotEl.closest('.page'), dx: 0, dy: 0,
@@ -604,7 +672,18 @@ export class Viewer {
     annotEl.setPointerCapture?.(e.pointerId);
   }
 
+  /* 用方向键微调位置：1pt，按住 Shift 是 10pt */
+  nudge(id, dx, dy) {
+    const a = this.doc?.annots.find((x) => x.id === id);
+    if (!a || a.inFile || !['note', 'textbox', 'image', 'sign', 'rect'].includes(a.type)) return;
+    a.rects = a.rects.map((r) => [r[0] + dx, r[1] + dy, r[2] + dx, r[3] + dy]);
+    if (a.points) a.points = a.points.map((p) => [p[0] + dx, p[1] + dy]);
+    this.cb.onAnnotChanged?.(a.id);
+    this.renderAnnotations();
+  }
+
   finishAnnotMove(d) {
+    d.el.style.transform = '';
     const a = this.doc.annots.find((x) => x.id === d.id);
     if (!a) return;
     const pr = this.pageEls[a.page - 1].getBoundingClientRect();
@@ -679,11 +758,40 @@ export class Viewer {
     } else if (a.type === 'rect') {
       el = h('div', { class: 'annot box', style: { left: left + 'px', top: top + 'px', width: w + 'px', height: hh + 'px', borderColor: color } });
     } else if (a.type === 'textbox') {
-      el = h('div', { class: 'annot textbox', contenteditable: 'true', spellcheck: 'false', style: { left: left + 'px', top: top + 'px', width: Math.max(40, w) + 'px', height: Math.max(18, hh) + 'px', fontSize: (a.fontSize || 12) * vp.scale + 'px' } });
+      const fsPx = (a.fontSize || 12) * vp.scale;
+      el = h('div', {
+        class: 'annot textbox',
+        contenteditable: 'true',
+        spellcheck: 'false',
+        style: {
+          left: left + 'px', top: top + 'px',
+          width: Math.max(40, w) + 'px',
+          minHeight: Math.max(16, hh) + 'px',
+          fontSize: fsPx.toFixed(2) + 'px',
+          lineHeight: '1.32',
+          padding: (2 * vp.scale).toFixed(2) + 'px',
+          boxSizing: 'border-box',
+          background: a.erase ? '#ffffff' : 'rgba(255,255,255,.72)',
+        },
+      });
       el.textContent = a.content || '';
-      el.addEventListener('input', () => this.cb.onTextEdit?.(a.id, el.textContent));
-      el.addEventListener('blur', () => { if (!el.textContent.trim()) this.cb.onDeleteAnnot?.(a.id); });
-      el.addEventListener('pointerdown', (e) => e.stopPropagation());
+      const readText = () => readEditable(el);
+      const syncHeight = () => {
+        // 文字变多就往下长，重新算 PDF 矩形，否则保存时会被裁掉
+        const hpt = Math.max(12, el.scrollHeight / vp.scale);
+        if (Math.abs(hpt - (a.rects[0][3] - a.rects[0][1])) > 0.5) {
+          a.rects[0][1] = a.rects[0][3] - hpt;
+          this.cb.onAnnotChanged?.(a.id);
+        }
+      };
+      el.addEventListener('input', () => { this.cb.onTextEdit?.(a.id, readText()); syncHeight(); });
+      el.addEventListener('blur', () => {
+        if (!readText().trim()) this.cb.onDeleteAnnot?.(a.id);
+        else syncHeight();
+      });
+      // 还拿着「文本框」工具时，点已有的框只是继续输入，不要再叠一个新的
+      el.addEventListener('pointerdown', (e) => { if (this.tool !== 'select') e.stopPropagation(); });
+      el.addEventListener('dblclick', (e) => { e.stopPropagation(); el.focus(); });
     } else if (a.type === 'image' || a.type === 'sign') {
       el = h('img', { class: 'annot img', src: a.dataUrl, style: { left: left + 'px', top: top + 'px', width: w + 'px', height: hh + 'px' } });
     } else if (a.type === 'ink') {
@@ -843,8 +951,26 @@ export class Viewer {
   }
 }
 
-function hexA(hex, alpha) {
-  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+/** contenteditable 里按回车会生成 <div>/<br>，直接取 textContent 会把换行吃掉 */
+function readEditable(root) {
+  let out = '';
+  const walk = (n) => {
+    for (const c of n.childNodes) {
+      if (c.nodeType === 3) out += c.nodeValue;
+      else if (c.nodeName === 'BR') out += '\n';
+      else if (c.nodeName === 'DIV' || c.nodeName === 'P') {
+        if (out && !out.endsWith('\n')) out += '\n';
+        walk(c);
+      } else {
+        walk(c);
+      }
+    }
+  };
+  walk(root);
+  return out.replace(/\n$/, '');
+}
+
+function hexA(hex, alpha) {  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
   if (!m) return `rgba(255,225,77,${alpha})`;
   const v = parseInt(m[1], 16);
   return `rgba(${(v >> 16) & 255},${(v >> 8) & 255},${v & 255},${alpha})`;

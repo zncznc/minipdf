@@ -1,7 +1,7 @@
 {
   "name": "minipdf",
   "productName": "MiniPDF",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "MiniPDF — 复刻 Acrobat 工作流的 PDF 阅读 / 注释 / 页面编排桌面应用",
   "main": "electron/main.cjs",
   "author": "MiniPDF",
@@ -24,9 +24,9 @@
     "files": [
       "electron/**/*",
       "app/**/*",
+      "samples/sample.pdf",
       "package.json",
       "!app/vendor/pdfjs/build/*.map",
-      "!samples/**",
       "!tools/**",
       "!dist/**"
     ],

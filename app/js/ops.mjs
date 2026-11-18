@@ -1,6 +1,6 @@
 /* PDF 写操作：全部经 pdf-lib 落到真实文件 */
 const L = window.PDFLib;
-const { PDFDocument, degrees, PDFName, PDFHexString, PDFString, PDFArray, PDFTextField, PDFCheckBox, PDFRadioGroup, PDFDropdown, PDFOptionList } = L;
+const { PDFDocument, degrees, rgb, PDFName, PDFHexString, PDFString, PDFArray, PDFTextField, PDFCheckBox, PDFRadioGroup, PDFDropdown, PDFOptionList } = L;
 
 const AUTHOR = 'MiniPDF';
 
@@ -137,18 +137,15 @@ export function textboxToPng(a, scale = 2) {
   canvas.height = Math.ceil(hh * scale);
   const ctx = canvas.getContext('2d');
   ctx.scale(scale, scale);
-  ctx.fillStyle = '#ffffff';
-  ctx.globalAlpha = 0.92;
-  ctx.fillRect(0, 0, w, hh);
-  ctx.globalAlpha = 1;
   ctx.fillStyle = '#111111';
   ctx.font = `${fs}px "Microsoft YaHei", "Segoe UI", sans-serif`;
   ctx.textBaseline = 'top';
   const text = a.content || '';
   const maxW = w - pad * 2;
   let line = '';
-  let y = pad;
+  // 与编辑时的 CSS 对齐：line-height 1.32，半行距 =（行高−字号）/2
   const lineH = fs * 1.32;
+  let y = pad + (lineH - fs) * 0.5;
   for (const ch of text) {
     if (ch === '\n') {
       ctx.fillText(line, pad, y);
@@ -185,7 +182,16 @@ export async function savePdf(bytes, annots = [], fields = {}, opts = {}) {
     if (!pages[a.page - 1]) continue;
     if (a.type === 'textbox' || a.type === 'image' || a.type === 'sign') {
       const dataUrl = a.type === 'textbox' ? textboxToPng(a, 3) : a.dataUrl;
-      if (dataUrl) await drawRaster(pdfDoc, pages[a.page - 1], dataUrl, a.rects[0]);
+      if (dataUrl) {
+        // 文本框默认先在底下铺一层白，盖住被替换的原文；否则新旧文字叠在一起没法看
+        if (a.type === 'textbox' && a.erase !== false) {
+          const r = a.rects[0];
+          pages[a.page - 1].drawRectangle({
+            x: r[0], y: r[1], width: r[2] - r[0], height: r[3] - r[1], color: rgb(1, 1, 1),
+          });
+        }
+        await drawRaster(pdfDoc, pages[a.page - 1], dataUrl, a.rects[0]);
+      }
       continue;
     }
     vectorAnnots.push(a);

@@ -253,12 +253,13 @@ body.tool-text #viewer { cursor: text; }
 .annot.arrow { overflow: visible; }
 .annot.ink { overflow: visible; }
 .annot.textbox {
-  border: 1px dashed rgba(20,115,230,.7); background: rgba(255,255,255,.65);
-  padding: 3px 5px; font-size: 12px; color: #111; white-space: pre-wrap; overflow: hidden;
-  user-select: text;
+  border: 1px dashed rgba(20,115,230,.75); background: rgba(255,255,255,.7);
+  color: #111; white-space: pre-wrap; overflow-wrap: anywhere;
+  user-select: text; cursor: text; min-height: 16px;
 }
-.annot.textbox:focus { outline: 2px solid var(--accent); background: #fff; }
-.annot.img { object-fit: contain; }
+.annot.textbox:focus { outline: 2px solid var(--accent); border-color: transparent; background: rgba(255,255,255,.92); }
+.annot.textbox:empty::before { content: '输入文字…'; color: #9aa4b2; }
+.annot.img { object-fit: contain; cursor: move; }
 .annot.selected { outline: 2px solid var(--accent); outline-offset: 1px; }
 .annot .del {
   position: absolute; right: -9px; top: -9px; width: 18px; height: 18px; border-radius: 50%;

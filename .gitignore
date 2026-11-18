@@ -4,7 +4,7 @@ dist/
 # 自检产物与调试截图（只保留 README 引用的那几张）
 build/shot*.png
 build/hold.png
-build/packaged.png
+build/packaged*.png
 build/io-saved.pdf
 build/form-test.pdf
 build/annotations.pdf
