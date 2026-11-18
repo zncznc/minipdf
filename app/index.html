@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' blob:;">
+<title>MiniPDF</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<!-- ── 标题栏：品牌 / 菜单 / 文档标签 / 窗口按钮 ───────────────── -->
+<header id="titlebar">
+  <div class="brand" title="MiniPDF">
+    <span class="brand-mark">P</span>
+    <span class="brand-name">MiniPDF</span>
+  </div>
+  <nav id="menubar" aria-label="主菜单"></nav>
+  <div id="tabstrip">
+    <div id="tabs" role="tablist"></div>
+    <button id="tabNew" class="tab-new" title="打开 PDF（Ctrl+O）"><span data-icon="plus"></span></button>
+  </div>
+  <div class="winctrls">
+    <button data-win="minimize" title="最小化"><svg viewBox="0 0 12 12" width="12" height="12"><path d="M2 6h8" stroke="currentColor" stroke-width="1.2"/></svg></button>
+    <button data-win="maximize" title="最大化"><svg viewBox="0 0 12 12" width="12" height="12"><rect x="2.2" y="2.2" width="7.6" height="7.6" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></button>
+    <button data-win="close" class="danger" title="关闭"><svg viewBox="0 0 12 12" width="12" height="12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" stroke-width="1.2"/></svg></button>
+  </div>
+</header>
+
+<!-- ── 快捷工具条 ─────────────────────────────────────────────── -->
+<div id="toolbar">
+  <div class="tb-group">
+    <button class="tb-btn" data-act="open" title="打开 (Ctrl+O)"><span data-icon="open"></span><em>打开</em></button>
+    <button class="tb-btn" data-act="save" title="保存 (Ctrl+S)"><span data-icon="save"></span><em>保存</em></button>
+    <button class="tb-btn" data-act="print" title="打印 (Ctrl+P)"><span data-icon="print"></span><em>打印</em></button>
+  </div>
+  <div class="tb-sep"></div>
+  <div class="tb-group">
+    <button class="tb-icon" data-act="undo" title="撤销 (Ctrl+Z)"><span data-icon="undo"></span></button>
+    <button class="tb-icon" data-act="redo" title="重做 (Ctrl+Y)"><span data-icon="redo"></span></button>
+  </div>
+  <div class="tb-sep"></div>
+  <div class="tb-group" id="toolModes">
+    <button class="tb-icon active" data-tool="select" title="选择文本 (V)"><span data-icon="cursor"></span></button>
+    <button class="tb-icon" data-tool="hand" title="抓手 (H)"><span data-icon="hand"></span></button>
+    <button class="tb-icon" data-act="annotbar" title="注释工具条"><span data-icon="comment"></span></button>
+  </div>
+  <div class="tb-sep"></div>
+  <div class="tb-group zoom-group">
+    <button class="tb-icon" data-act="zoom-out" title="缩小 (Ctrl+-)"><span data-icon="minus"></span></button>
+    <button id="zoomLabel" class="zoom-label" data-act="zoom-menu" title="缩放">100%</button>
+    <button class="tb-icon" data-act="zoom-in" title="放大 (Ctrl+=)"><span data-icon="plus"></span></button>
+    <button class="tb-icon" data-act="fit-width" title="适合宽度 (Ctrl+2)"><span data-icon="fitWidth"></span></button>
+    <button class="tb-icon" data-act="fit-page" title="适合页面 (Ctrl+1)"><span data-icon="fitPage"></span></button>
+  </div>
+  <div class="tb-spacer"></div>
+  <div class="tb-search">
+    <span data-icon="search"></span>
+    <input id="quickSearch" type="search" placeholder="在文档中查找…" autocomplete="off" spellcheck="false">
+    <kbd>Ctrl F</kbd>
+  </div>
+  <button class="tb-icon" data-act="toggle-tools" title="显示/隐藏工具面板"><span data-icon="panelRight"></span></button>
+  <button class="tb-icon" data-act="theme" title="切换主题"><span data-icon="moon"></span></button>
+</div>
+
+<!-- ── 主体三栏 ───────────────────────────────────────────────── -->
+<div id="main">
+  <nav id="rail" aria-label="侧栏">
+    <button class="rail-btn active" data-panel="thumbs" title="页面缩略图"><span data-icon="pages"></span><em>页面</em></button>
+    <button class="rail-btn" data-panel="outline" title="书签"><span data-icon="bookmark"></span><em>书签</em></button>
+    <button class="rail-btn" data-panel="comments" title="注释"><span data-icon="comment"></span><em>注释</em></button>
+    <button class="rail-btn" data-panel="attach" title="附件"><span data-icon="attach"></span><em>附件</em></button>
+    <button class="rail-btn" data-panel="search" title="搜索"><span data-icon="search"></span><em>搜索</em></button>
+    <div class="rail-gap"></div>
+    <button class="rail-btn" data-panel="props" title="文档属性"><span data-icon="info"></span><em>属性</em></button>
+  </nav>
+
+  <aside id="sidebar">
+    <div class="side-head">
+      <span id="sideTitle">页面</span>
+      <div class="side-head-actions">
+        <button id="sideMore" class="mini-btn" title="更多"><span data-icon="more"></span></button>
+        <button id="sideClose" class="mini-btn" title="收起侧栏"><span data-icon="close"></span></button>
+      </div>
+    </div>
+    <div id="sideBody"></div>
+  </aside>
+
+  <section id="viewerWrap">
+    <div id="viewer" tabindex="0">
+      <div id="pages"></div>
+      <div id="welcome" class="welcome">
+        <div class="welcome-inner">
+          <div class="welcome-head">
+            <div class="welcome-logo">P</div>
+            <div>
+              <h1>MiniPDF</h1>
+              <p class="muted">阅读、注释、编排、签名 —— 一个能真正改文件的 PDF 工作台</p>
+            </div>
+          </div>
+          <div class="dropzone" id="dropzone">
+            <span data-icon="open"></span>
+            <strong>把 PDF 拖到这里，或点击打开</strong>
+            <span class="muted">支持多选，也可以直接在「最近打开」里继续</span>
+            <button class="primary" data-act="open">选择文件</button>
+          </div>
+          <div class="welcome-cols">
+            <section class="recent-block">
+              <div class="block-head"><h2>最近打开</h2><button class="link-btn" id="clearRecent">清空</button></div>
+              <div id="recentList" class="recent-list"></div>
+            </section>
+            <section class="tip-block">
+              <div class="block-head"><h2>常用工具</h2></div>
+              <div class="tip-grid" id="homeTools"></div>
+            </section>
+          </div>
+          <div class="welcome-foot muted">
+            <span id="appVer"></span>
+            <span class="dot">·</span>
+            <span>本地处理，文件不出这台机器</span>
+            <span class="dot">·</span>
+            <span>Agent 桥 <code>127.0.0.1:7857</code></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 注释浮动工具条 -->
+    <div id="annotBar" class="annot-bar hidden"></div>
+
+    <!-- 页码浮层 -->
+    <div id="pageChip" class="page-chip hidden"></div>
+  </section>
+
+  <aside id="toolsPanel">
+    <div class="tools-head">
+      <h2>所有工具</h2>
+      <button class="mini-btn" data-act="toggle-tools" title="收起"><span data-icon="close"></span></button>
+    </div>
+    <div class="tools-scroll" id="toolsGrid"></div>
+    <div class="tools-foot muted">点开任一工具，右侧会变成该工具的操作面板</div>
+  </aside>
+</div>
+
+<!-- ── 状态栏 ─────────────────────────────────────────────────── -->
+<footer id="statusbar">
+  <div class="st-left">
+    <span id="stFile" class="st-file">未打开文档</span>
+    <span id="stDirty" class="st-dirty hidden">未保存</span>
+  </div>
+  <div class="st-right">
+    <button id="pgPrev" class="st-btn" title="上一页"><span data-icon="chevronLeft"></span></button>
+    <span class="st-page"><input id="pageInput" value="-" inputmode="numeric"> <span class="muted">/</span> <span id="pageTotal">-</span></span>
+    <button id="pgNext" class="st-btn" title="下一页"><span data-icon="chevronRight"></span></button>
+    <div class="st-sep"></div>
+    <span id="stSize" class="muted">—</span>
+    <div class="st-sep"></div>
+    <button class="st-btn" data-act="zoom-out" title="缩小"><span data-icon="minus"></span></button>
+    <span id="stZoom" class="st-zoom">100%</span>
+    <button class="st-btn" data-act="zoom-in" title="放大"><span data-icon="plus"></span></button>
+  </div>
+</footer>
+
+<div id="overlayRoot"></div>
+<div id="toastRoot" class="toast-root"></div>
+<div id="dropMask" class="drop-mask hidden"><div>松开以打开 PDF</div></div>
+
+<script>
+  window.__bootErrors = [];
+  window.addEventListener('error', (e) => window.__bootErrors.push({ msg: e.message, src: e.filename, line: e.lineno, col: e.colno, stack: e.error && e.error.stack }));
+  window.addEventListener('unhandledrejection', (e) => window.__bootErrors.push({ rej: String((e.reason && (e.reason.stack || e.reason)) || e.reason) }));
+</script>
+<script src="vendor/pdf-lib.min.js"></script>
+<script type="module" src="js/app.mjs"></script>
+</body>
+</html>

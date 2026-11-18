@@ -1,0 +1,74 @@
+{
+  "name": "minipdf",
+  "productName": "MiniPDF",
+  "version": "1.0.0",
+  "description": "MiniPDF — 复刻 Acrobat 工作流的 PDF 阅读 / 注释 / 页面编排桌面应用",
+  "main": "electron/main.cjs",
+  "author": "MiniPDF",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "serve": "node tools/serve.mjs",
+    "sample": "node tools/make-sample.mjs",
+    "dist": "electron-builder --win nsis",
+    "dist:dir": "electron-builder --win dir"
+  },
+  "build": {
+    "appId": "com.minipdf.app",
+    "productName": "MiniPDF",
+    "copyright": "MiniPDF",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "app/**/*",
+      "package.json",
+      "!app/vendor/pdfjs/build/*.map",
+      "!samples/**",
+      "!tools/**",
+      "!dist/**"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "minipdf_${version}_setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "MiniPDF",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    },
+    "compression": "maximum",
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ]
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^4.10.38"
+  },
+  "devDependencies": {
+    "electron": "^45.3.3",
+    "electron-builder": "^26.18.0"
+  }
+}
