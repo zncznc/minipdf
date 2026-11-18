@@ -252,13 +252,42 @@ body.tool-text #viewer { cursor: text; }
 .annot.box { border: 2px solid; }
 .annot.arrow { overflow: visible; }
 .annot.ink { overflow: visible; }
-.annot.textbox {
-  border: 1px dashed rgba(20,115,230,.75); background: rgba(255,255,255,.7);
-  color: #111; white-space: pre-wrap; overflow-wrap: anywhere;
-  user-select: text; cursor: text; min-height: 16px;
+/* 文本框：平时显示 canvas（就是保存后的样子），只有进入输入状态才换成 contenteditable */
+.annot.textbox { border: 1px dashed rgba(20,115,230,.55); cursor: text; overflow: hidden; }
+.annot.textbox .tb-canvas { display: block; }
+.annot.textbox .tb-edit {
+  display: none; position: absolute; inset: 0; outline: none;
+  white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; cursor: text;
 }
-.annot.textbox:focus { outline: 2px solid var(--accent); border-color: transparent; background: rgba(255,255,255,.92); }
-.annot.textbox:empty::before { content: '输入文字…'; color: #9aa4b2; }
+.annot.textbox.editing { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); overflow: visible; }
+.annot.textbox.editing .tb-canvas { display: none; }
+.annot.textbox.editing .tb-edit { display: block; }
+
+/* 文字格式面板控件 */
+.sel {
+  height: 28px; width: 100%; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--chrome); color: var(--text-2); font-size: 12px; padding: 0 6px;
+}
+.color-input { width: 44px; height: 24px; padding: 0; border: 1px solid var(--line); border-radius: 5px; background: none; }
+.fld-label { font-size: 11px; color: var(--muted); margin: 10px 0 5px; }
+.icon-chip { width: 30px; padding: 0; display: grid; place-items: center; }
+.tp-note {
+  font-size: 11.5px; color: var(--muted); background: var(--chrome); border: 1px solid var(--line-soft);
+  border-radius: 6px; padding: 7px 9px; margin-bottom: 10px; line-height: 1.5;
+}
+.tp-note b { color: var(--text); font-weight: 600; }
+
+/* 裁剪对话框 */
+.crop-wrap { display: flex; flex-direction: column; gap: 12px; }
+.crop-stage {
+  position: relative; align-self: center; line-height: 0;
+  background: repeating-conic-gradient(#eee 0% 25%, #fff 0% 50%) 50% / 12px 12px;
+  border: 1px solid var(--line-soft); border-radius: 6px; overflow: hidden;
+}
+.crop-img { display: block; max-width: 460px; max-height: 300px; }
+.crop-shade { position: absolute; background: rgba(17,21,26,.42); pointer-events: none; }
+.crop-rows { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 12px; }
+.crop-rows .fld input { width: 100%; }
 .annot.img { object-fit: contain; cursor: move; }
 .annot.selected { outline: 2px solid var(--accent); outline-offset: 1px; }
 .annot .del {

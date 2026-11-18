@@ -1,5 +1,6 @@
 import { h, clamp, uid } from './util.mjs';
 import { getPageViewport, renderPage, renderTextLayer, getWidgets } from './engine.mjs';
+import { renderTextBox, textBoxHeight } from './ops.mjs';
 import { icon } from './icons.mjs';
 
 const SEL_TOOLS = new Set(['highlight', 'underline', 'strikeout']);
@@ -464,7 +465,7 @@ export class Viewer {
     }
   }
 
-  /* 改字号/宽度后重新量一遍文本框高度，避免保存时被裁 */
+  /* 改字号/宽度/行距后重新量一遍文本框高度，避免保存时被裁 */
   syncTextboxHeights() {
     if (!this.doc) return;
     let changed = false;
@@ -473,13 +474,111 @@ export class Viewer {
       const vp = pageEl && pageEl._vp;
       const a = this.doc.annots.find((x) => x.id === el.dataset.id);
       if (!a || !vp) continue;
-      const hpt = Math.max(12, el.scrollHeight / vp.scale);
+      const wPt = Math.max(8, a.rects[0][2] - a.rects[0][0]);
+      const hpt = Math.max(8, textBoxHeight(a, wPt));
       if (Math.abs(hpt - (a.rects[0][3] - a.rects[0][1])) > 0.5) {
         a.rects[0][1] = a.rects[0][3] - hpt;
         changed = true;
       }
+      this.placeTextbox(el, a, vp);
+      this.paintTextbox(el);
     }
     if (changed) this.cb.onAnnotChanged?.();
+  }
+
+  /* 按 PDF 矩形重新摆 DOM，并把内容画到 canvas 上 */
+  placeTextbox(el, a, vp) {
+    const r = a.rects[0];
+    const vx = Math.min(r[0], r[2]);
+    const vyTop = Math.max(r[1], r[3]);
+    const q = vp.convertToViewportPoint(vx, vyTop);
+    el.style.left = q[0] + 'px';
+    el.style.top = q[1] + 'px';
+    el.style.width = Math.max(20, (Math.max(r[0], r[2]) - vx) * vp.scale) + 'px';
+    el.style.height = Math.max(10, (vyTop - Math.min(r[1], r[3])) * vp.scale) + 'px';
+  }
+
+  paintTextbox(el) {
+    const a = el._a || this.doc?.annots.find((x) => x.id === el.dataset.id);
+    const vp = el._vp || el.closest('.page')?._vp;
+    if (!a || !vp) return;
+    const wPt = Math.max(8, a.rects[0][2] - a.rects[0][0]);
+    const hPt = Math.max(8, a.rects[0][3] - a.rects[0][1]);
+    const scale = Math.max(2, vp.scale * Math.min(2, window.devicePixelRatio || 1));
+    const c = renderTextBox(a, wPt, hPt, scale);
+    const cv = el.querySelector('.tb-canvas');
+    if (!cv) return;
+    cv.width = c.width;
+    cv.height = c.height;
+    cv.style.width = wPt * vp.scale + 'px';
+    cv.style.height = hPt * vp.scale + 'px';
+    const ctx = cv.getContext('2d');
+    ctx.clearRect(0, 0, c.width, c.height);
+    ctx.drawImage(c, 0, 0);
+    el.style.background = a.erase ? '#ffffff' : 'transparent';
+  }
+
+  /* 所有文本框重画（改属性后调用） */
+  repaintTextBoxes() {
+    for (const el of this.pagesEl.querySelectorAll('.annot.textbox')) {
+      const a = this.doc?.annots.find((x) => x.id === el.dataset.id);
+      const vp = el.closest('.page')?._vp;
+      if (!a || !vp) continue;
+      el._a = a;
+      el._vp = vp;
+      this.placeTextbox(el, a, vp);
+      this.paintTextbox(el);
+      if (el.classList.contains('editing')) this.styleEditLayer(el, a, vp);
+    }
+  }
+
+  /* 输入层的样式要和 canvas 用同一套参数，边打字边改格式才不跳 */
+  styleEditLayer(el, a, vp) {
+    const edit = el.querySelector('.tb-edit');
+    if (!edit || !vp) return;
+    const px = (v) => v * vp.scale;
+    edit.style.fontFamily = `"${a.font || 'Microsoft YaHei'}", "Microsoft YaHei", "Segoe UI", sans-serif`;
+    edit.style.fontSize = px((a.fontSize || 12) * (a.script === 'sup' || a.script === 'sub' ? 0.62 : 1)) + 'px';
+    edit.style.fontWeight = a.bold ? '700' : '400';
+    edit.style.fontStyle = a.italic ? 'italic' : 'normal';
+    edit.style.textDecoration = a.underline ? 'underline' : 'none';
+    edit.style.textAlign = a.align === 'justify' ? 'justify' : (a.align || 'left');
+    edit.style.lineHeight = String(a.lineSpacing || 1.32);
+    edit.style.letterSpacing = a.charSpacing ? px(a.charSpacing) + 'px' : '0';
+    edit.style.color = a.color || '#111111';
+    edit.style.padding = px(2) + 'px';
+    edit.style.opacity = String(a.opacity == null ? 1 : a.opacity);
+    edit.style.transform = (a.rotate || a.flipH || a.flipV)
+      ? [a.flipH ? 'scaleX(-1)' : '', a.flipV ? 'scaleY(-1)' : '', a.rotate ? `rotate(${Math.round(a.rotate)}deg)` : ''].filter(Boolean).join(' ')
+      : '';
+  }
+
+  /* 进入输入状态：显示可编辑层，先套上字体样式，再放光标 */
+  enterTextEdit(el, selectAll = false) {
+    const a = this.doc?.annots.find((x) => x.id === el.dataset.id);
+    const vp = el.closest('.page')?._vp;
+    if (!a || !vp) return;
+    const edit = el.querySelector('.tb-edit');
+    if (!edit) return;
+    this.styleEditLayer(el, a, vp);
+    el.classList.add('editing');
+    edit.focus();
+    if (selectAll) {
+      const r = document.createRange();
+      r.selectNodeContents(edit);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
+  }
+
+  /* 图片/签名的翻转、旋转用 CSS 预览，保存时用同一套参数烘进位图 */
+  rasterTransform(a) {
+    const t = [];
+    if (a.flipH) t.push('scaleX(-1)');
+    if (a.flipV) t.push('scaleY(-1)');
+    if (a.rotate) t.push(`rotate(${Math.round(a.rotate)}deg)`);
+    return t.length ? t.join(' ') : 'none';
   }
 
   /* ── 绘制 ─────────────────────────────────────────────── */
@@ -507,10 +606,11 @@ export class Viewer {
         if (this.selectedId !== annotEl.dataset.id) {
           this.selectedId = annotEl.dataset.id;
           this.applySelection();
+          this.cb.onSelect?.(this.selectedId);
         }
         // 文本框 / 便签 / 图片都能拖动；单击文本框同时把光标放进去，不用再点第二下
         this.startAnnotMove(e, annotEl);
-        if (annotEl.dataset.type === 'textbox') annotEl.focus();
+        if (annotEl.dataset.type === 'textbox') this.enterTextEdit(annotEl);
         return;
       }
       return;
@@ -568,10 +668,12 @@ export class Viewer {
 
     if (tool === 'note' || tool === 'freetext' || tool === 'textbox' || tool === 'sign' || tool === 'image') {
       const isText = tool === 'textbox' || tool === 'freetext';
+      const st = isText ? (this.cb.getTextStyle?.() || {}) : null;
+      const fsPt = (st && st.fontSize) || this.cb.getFontSize?.() || 12;
       // 图片/签名按原始宽高比放，不然手写字会被拉扁
       const ratio = isText ? null : (this.cb.getAssetRatio?.() || 2.6);
       const wPt = tool === 'note' ? 18 : isText ? 190 : 132;
-      const hPt = tool === 'note' ? 18 : isText ? (this.cb.getFontSize?.() || 12) * 1.7 : Math.max(10, wPt / ratio);
+      const hPt = tool === 'note' ? 18 : isText ? Math.max(18, fsPt * 1.7) : Math.max(10, wPt / ratio);
       // 别让框跑到页面外面去
       const pw = pageInfo?.w || 612;
       const ph = pageInfo?.h || 792;
@@ -579,16 +681,23 @@ export class Viewer {
       const y2 = clamp(pdfPt[1], 8, ph - 4);
       const x2 = Math.min(x1 + wPt, pw - 4);
       const y1 = Math.max(2, y2 - hPt);
-      this.cb.onCreateAnnot?.({
+      const partial = {
         ...base,
         type: isText ? 'textbox' : tool,
         rects: [[x1, y1, x2, y2]],
         content: '',
-        fontSize: this.cb.getFontSize?.() || 12,
         erase: isText ? this.cb.getErase?.() !== false : false,
         dataUrl: tool === 'sign' ? this.cb.getSignature?.() : tool === 'image' ? this.cb.getImage?.() : null,
         redact: false,
-      });
+      };
+      if (isText) {
+        // 文字颜色跟着「格式」面板走，不跟注释色走
+        delete partial.color;
+        partial.fontSize = fsPt;
+      } else {
+        partial.fontSize = this.cb.getFontSize?.() || 12;
+      }
+      this.cb.onCreateAnnot?.(partial);
       return;
     }
 
@@ -758,42 +867,44 @@ export class Viewer {
     } else if (a.type === 'rect') {
       el = h('div', { class: 'annot box', style: { left: left + 'px', top: top + 'px', width: w + 'px', height: hh + 'px', borderColor: color } });
     } else if (a.type === 'textbox') {
-      const fsPx = (a.fontSize || 12) * vp.scale;
+      const canvas = h('canvas', { class: 'tb-canvas' });
+      const edit = h('div', { class: 'tb-edit', contenteditable: 'true', spellcheck: 'false' });
       el = h('div', {
         class: 'annot textbox',
-        contenteditable: 'true',
-        spellcheck: 'false',
         style: {
           left: left + 'px', top: top + 'px',
           width: Math.max(40, w) + 'px',
-          minHeight: Math.max(16, hh) + 'px',
-          fontSize: fsPx.toFixed(2) + 'px',
-          lineHeight: '1.32',
-          padding: (2 * vp.scale).toFixed(2) + 'px',
-          boxSizing: 'border-box',
-          background: a.erase ? '#ffffff' : 'rgba(255,255,255,.72)',
+          height: Math.max(16, hh) + 'px',
+          background: a.erase ? '#ffffff' : 'transparent',
         },
-      });
-      el.textContent = a.content || '';
-      const readText = () => readEditable(el);
+      }, canvas, edit);
+      el._a = a;
+      el._vp = vp;
+      this.paintTextbox(el);
+
+      edit.textContent = a.content || '';
+      const readText = () => readEditable(edit);
       const syncHeight = () => {
-        // 文字变多就往下长，重新算 PDF 矩形，否则保存时会被裁掉
-        const hpt = Math.max(12, el.scrollHeight / vp.scale);
+        const hpt = textBoxHeight(a, Math.max(8, a.rects[0][2] - a.rects[0][0]));
         if (Math.abs(hpt - (a.rects[0][3] - a.rects[0][1])) > 0.5) {
           a.rects[0][1] = a.rects[0][3] - hpt;
+          this.placeTextbox(el, a, vp);
           this.cb.onAnnotChanged?.(a.id);
         }
       };
-      el.addEventListener('input', () => { this.cb.onTextEdit?.(a.id, readText()); syncHeight(); });
-      el.addEventListener('blur', () => {
-        if (!readText().trim()) this.cb.onDeleteAnnot?.(a.id);
-        else syncHeight();
+      edit.addEventListener('input', () => { this.cb.onTextEdit?.(a.id, readText()); syncHeight(); });
+      edit.addEventListener('blur', () => {
+        if (!readText().trim()) { this.cb.onDeleteAnnot?.(a.id); return; }
+        syncHeight();
+        el.classList.remove('editing');
+        this.paintTextbox(el);
+        this.cb.onTextCommit?.(a.id);
       });
       // 还拿着「文本框」工具时，点已有的框只是继续输入，不要再叠一个新的
       el.addEventListener('pointerdown', (e) => { if (this.tool !== 'select') e.stopPropagation(); });
-      el.addEventListener('dblclick', (e) => { e.stopPropagation(); el.focus(); });
+      el.addEventListener('dblclick', (e) => { e.stopPropagation(); this.enterTextEdit(el); });
     } else if (a.type === 'image' || a.type === 'sign') {
-      el = h('img', { class: 'annot img', src: a.dataUrl, style: { left: left + 'px', top: top + 'px', width: w + 'px', height: hh + 'px' } });
+      el = h('img', { class: 'annot img', src: a.dataUrl, style: { left: left + 'px', top: top + 'px', width: w + 'px', height: hh + 'px', transform: this.rasterTransform(a) } });
     } else if (a.type === 'ink') {
       el = h('div', { class: 'annot ink', style: { left: left + 'px', top: top + 'px', width: Math.max(2, w) + 'px', height: Math.max(2, hh) + 'px', pointerEvents: 'none' } });
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');

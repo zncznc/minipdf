@@ -26,6 +26,7 @@ const S = {
   lastSignature: null,
   assetRatio: 2.6,
   fontSize: 12,
+  textStyle: { ...ops.TEXT_STYLE_DEFAULT },
   eraseUnder: true,
   suggestions: [],
   panelTool: null,
@@ -89,9 +90,318 @@ const viewer = new Viewer({
   getImage: () => S.pendingImage,
   getAssetRatio: () => S.assetRatio || 2.6,
   getFontSize: () => S.fontSize || 12,
+  getTextStyle: () => S.textStyle || ops.TEXT_STYLE_DEFAULT,
   getErase: () => S.eraseUnder !== false,
+  onSelect: (id) => {
+    const a = active?.annots.find((x) => x.id === id);
+    if (a && a.type === 'textbox') {
+      if (S.panelTool !== 'textprops') openToolPanel('textprops');
+      else openToolPanel('textprops');
+    } else if (a && (a.type === 'image' || a.type === 'sign')) {
+      openToolPanel('objprops');
+    } else if (S.panelTool === 'textprops' || S.panelTool === 'objprops') {
+      openToolPanel(null);
+    }
+  },
+  onTextCommit: () => { if (S.panelTool === 'textprops') openToolPanel('textprops'); },
   onEscape: () => setTool('select'),
 });
+
+/* ── 文字格式（对齐 Acrobat「编辑 PDF → 格式」） ───────────── */
+function selectedTextbox() {
+  const d = active;
+  if (!d) return null;
+  return d.annots.find((x) => x.id === viewer.selectedId && x.type === 'textbox') || null;
+}
+
+function textStyleOf(a) {
+  const out = { ...ops.TEXT_STYLE_DEFAULT };
+  if (a) for (const k of Object.keys(out)) if (a[k] !== undefined && a[k] !== null) out[k] = a[k];
+  return out;
+}
+
+/** 改样式：选中了就改对象并重排重绘，没选中就存成下次新建的默认值 */
+function applyTextStyle(patch) {
+  Object.assign(S.textStyle, patch);
+  if (patch.fontSize != null) S.fontSize = patch.fontSize;
+  const a = selectedTextbox();
+  if (a) {
+    Object.assign(a, patch);
+    markDirty();
+    viewer.syncTextboxHeights();
+    viewer.repaintTextBoxes();
+  }
+  if (S.panelTool === 'textprops') openToolPanel('textprops');
+}
+
+function styleToggle(iconName, on, title, onclick) {
+  return h('button', {
+    class: 'chip icon-chip' + (on ? ' active' : ''), title,
+    html: icon(iconName, 16), onclick,
+  });
+}
+
+function styleNumber(label, key, { min, max, step, suffix = '' }) {
+  const st = textStyleOf(selectedTextbox());
+  const inp = h('input', { type: 'number', min: String(min), max: String(max), step: String(step), value: String(st[key]) });
+  inp.addEventListener('change', () => {
+    const v = clamp(Number(inp.value), min, max);
+    if (!Number.isFinite(v)) return;
+    inp.value = String(v);
+    applyTextStyle({ [key]: v });
+  });
+  return h('label', { class: 'fld' }, suffix ? `${label}（${suffix}）` : label, inp);
+}
+
+function buildTextPanel(body) {
+  const a = selectedTextbox();
+  const st = textStyleOf(a);
+  const page = a ? a.page : (viewer.currentPage || 1);
+  body.append(h('div', { class: 'tp-note' },
+    a ? h('span', {}, h('b', { text: '已选中文本框' }), ` · 第 ${page} 页`)
+      : h('span', { text: '未选中文本框：下面的设置会成为新建文本的默认样式' })));
+
+  const fontSel = h('select', { class: 'sel' });
+  for (const [val, label] of ops.FONT_CHOICES) {
+    const o = h('option', { value: val, text: label });
+    if (val === st.font) o.selected = true;
+    fontSel.append(o);
+  }
+  fontSel.addEventListener('change', () => applyTextStyle({ font: fontSel.value }));
+  body.append(h('label', { class: 'fld' }, '字体', fontSel));
+
+  const size = h('input', { type: 'number', min: '4', max: '200', step: '0.5', value: String(st.fontSize) });
+  size.addEventListener('change', () => {
+    const v = clamp(Number(size.value) || 12, 4, 200);
+    size.value = String(v);
+    applyTextStyle({ fontSize: v });
+  });
+  const chips = h('div', { class: 'chips' });
+  for (const n of [8, 10, 12, 14, 18, 24, 36]) {
+    chips.append(h('button', {
+      class: 'chip' + (Math.abs(st.fontSize - n) < 0.01 ? ' active' : ''), text: String(n),
+      onclick: () => applyTextStyle({ fontSize: n }),
+    }));
+  }
+  body.append(h('label', { class: 'fld' }, '字号（pt）', size), chips);
+
+  const col = h('input', { type: 'color', value: st.color, class: 'color-input' });
+  col.addEventListener('change', () => applyTextStyle({ color: col.value }));
+  const sw = h('div', { class: 'swatches' });
+  for (const c of ['#111111', '#ffffff', '#e8453c', '#ff9f1a', '#ffe14d', '#2fb344', '#1473e6', '#8e5bd8']) {
+    sw.append(h('button', {
+      class: 'sw' + (String(c).toLowerCase() === String(st.color).toLowerCase() ? ' active' : ''),
+      title: c, style: { background: c }, onclick: () => applyTextStyle({ color: c }),
+    }));
+  }
+  body.append(h('label', { class: 'fld' }, '文字颜色', col), sw);
+
+  body.append(h('div', { class: 'fld-label', text: '字形' }));
+  body.append(h('div', { class: 'chips' },
+    styleToggle('bold', st.bold, '加粗', () => applyTextStyle({ bold: !st.bold })),
+    styleToggle('italic', st.italic, '斜体', () => applyTextStyle({ italic: !st.italic })),
+    styleToggle('underline', st.underline, '下划线', () => applyTextStyle({ underline: !st.underline })),
+    styleToggle('superscript', st.script === 'sup', '上标', () => applyTextStyle({ script: st.script === 'sup' ? 'none' : 'sup' })),
+    styleToggle('subscript', st.script === 'sub', '下标', () => applyTextStyle({ script: st.script === 'sub' ? 'none' : 'sub' })),
+  ));
+  body.append(h('div', { class: 'chips', style: { marginTop: '6px' } },
+    h('button', { class: 'chip' + (st.list === 'bullet' ? ' active' : ''), text: '• 项目符号', onclick: () => applyTextStyle({ list: st.list === 'bullet' ? 'none' : 'bullet' }) }),
+    h('button', { class: 'chip' + (st.list === 'number' ? ' active' : ''), text: '1. 编号', onclick: () => applyTextStyle({ list: st.list === 'number' ? 'none' : 'number' }) }),
+  ));
+
+  body.append(h('div', { class: 'fld-label', text: '对齐' }));
+  body.append(h('div', { class: 'chips' },
+    styleToggle('alignLeft', st.align === 'left', '左对齐', () => applyTextStyle({ align: 'left' })),
+    styleToggle('alignCenter', st.align === 'center', '居中', () => applyTextStyle({ align: 'center' })),
+    styleToggle('alignRight', st.align === 'right', '右对齐', () => applyTextStyle({ align: 'right' })),
+    styleToggle('alignJustify', st.align === 'justify', '两端对齐', () => applyTextStyle({ align: 'justify' })),
+  ));
+
+  body.append(h('div', { class: 'hr' }));
+  body.append(styleNumber('行距', 'lineSpacing', { min: 0.6, max: 4, step: 0.05 }));
+  body.append(styleNumber('段间距', 'paraSpacing', { min: 0, max: 120, step: 1, suffix: 'pt' }));
+  body.append(styleNumber('字符间距', 'charSpacing', { min: -5, max: 40, step: 0.2, suffix: 'pt' }));
+  body.append(styleNumber('水平缩放', 'hScale', { min: 30, max: 300, step: 1, suffix: '%' }));
+  body.append(styleNumber('不透明度', 'opacity', { min: 0.05, max: 1, step: 0.05 }));
+
+  if (a) {
+    body.append(h('div', { class: 'hr' }));
+    body.append(h('div', { class: 'fld-label', text: '对象' }));
+    const wPt = Math.max(20, Math.round(a.rects[0][2] - a.rects[0][0]));
+    const wInp = h('input', { type: 'number', min: '20', max: '560', step: '5', value: String(wPt) });
+    wInp.addEventListener('change', () => {
+      const v = clamp(Number(wInp.value) || wPt, 20, 560);
+      a.rects[0][2] = Math.min(a.rects[0][0] + v, (active.pages[a.page - 1]?.w || 595) - 4);
+      markDirty();
+      viewer.syncTextboxHeights();
+      viewer.repaintTextBoxes();
+      openToolPanel('textprops');
+    });
+    body.append(h('label', { class: 'fld' }, '宽度（pt）', wInp));
+    body.append(h('div', { class: 'chips' },
+      styleToggle('flipH', a.flipH, '水平翻转', () => { a.flipH = !a.flipH; markDirty(); viewer.repaintTextBoxes(); openToolPanel('textprops'); }),
+      styleToggle('flipV', a.flipV, '垂直翻转', () => { a.flipV = !a.flipV; markDirty(); viewer.repaintTextBoxes(); openToolPanel('textprops'); }),
+      styleToggle('rotateCw', !!a.rotate, '旋转 90°（'+((a.rotate || 0))+'°）', () => { a.rotate = (((a.rotate || 0) + 90) % 360); markDirty(); viewer.repaintTextBoxes(); openToolPanel('textprops'); }),
+      styleToggle('front', false, '置于顶层', () => arrangeAnnot(a, 'front')),
+      styleToggle('back', false, '置于底层', () => arrangeAnnot(a, 'back')),
+    ));
+  }
+
+  body.append(h('div', { class: 'hr' }));
+  body.append(h('p', { class: 'muted', style: { fontSize: '11.5px' }, text: '文字以高质量位图写进页面，中文不会掉字；改样式后立即重排，保存时按当前设置烘进文件。' }));
+}
+
+function arrangeAnnot(a, where) {
+  const d = active;
+  if (!d) return;
+  pushSnapshot();
+  const i = d.annots.indexOf(a);
+  if (i < 0) return;
+  d.annots.splice(i, 1);
+  if (where === 'front') d.annots.push(a); else d.annots.unshift(a);
+  markDirty();
+  viewer.renderAnnotations();
+  openToolPanel(a.type === 'textbox' ? 'textprops' : 'objprops');
+}
+
+/* ── 图片 / 签名对象：翻转、旋转、裁剪、替换（对齐 Acrobat 的「编辑图像」）── */
+function selectedRaster() {
+  const d = active;
+  if (!d) return null;
+  return d.annots.find((x) => x.id === viewer.selectedId && (x.type === 'image' || x.type === 'sign')) || null;
+}
+
+/** 转 90° 时把矩形宽高换过来，不然图会被拉扁 */
+function rotateRaster(a, deg) {
+  const r = a.rects[0];
+  const before = ((a.rotate || 0) / 90) % 2 === 1;
+  a.rotate = ((((a.rotate || 0) + deg) % 360) + 360) % 360;
+  const after = (a.rotate / 90) % 2 === 1;
+  if (before !== after) {
+    const cx = (r[0] + r[2]) / 2, cy = (r[1] + r[3]) / 2;
+    const w = r[2] - r[0], hh = r[3] - r[1];
+    const pw = active.pages[a.page - 1]?.w || 595;
+    const ph = active.pages[a.page - 1]?.h || 842;
+    let x1 = cx - hh / 2, x2 = cx + hh / 2, y1 = cy - w / 2, y2 = cy + w / 2;
+    if (x1 < 2) { x2 += 2 - x1; x1 = 2; }
+    if (x2 > pw - 2) { x1 -= x2 - (pw - 2); x2 = pw - 2; }
+    if (y1 < 2) { y2 += 2 - y1; y1 = 2; }
+    if (y2 > ph - 2) { y1 -= y2 - (ph - 2); y2 = ph - 2; }
+    r[0] = x1; r[1] = y1; r[2] = x2; r[3] = y2;
+  }
+  a.updated = Date.now();
+}
+
+async function cropModal(a) {
+  const body = h('div', { class: 'crop-wrap' });
+  const imgWrap = h('div', { class: 'crop-stage' });
+  const img = h('img', { src: a.dataUrl, class: 'crop-img' });
+  const sh = {
+    t: h('div', { class: 'crop-shade' }), b: h('div', { class: 'crop-shade' }),
+    l: h('div', { class: 'crop-shade' }), r: h('div', { class: 'crop-shade' }),
+  };
+  imgWrap.append(img, sh.t, sh.b, sh.l, sh.r);
+  const inputs = {};
+  const rows = h('div', { class: 'crop-rows' });
+  for (const [k, label] of [['l', '左'], ['r', '右'], ['t', '上'], ['b', '下']]) {
+    const inp = h('input', { type: 'number', min: '0', max: '45', step: '1', value: '0' });
+    inputs[k] = inp;
+    rows.append(h('label', { class: 'fld' }, `裁掉${label}（%）`, inp));
+  }
+  const sync = () => {
+    const v = (k) => Math.min(45, Math.max(0, Number(inputs[k].value) || 0));
+    const l = v('l'), r = v('r'), t = v('t'), b = v('b');
+    sh.t.style.cssText = `left:0;right:0;top:0;height:${t}%`;
+    sh.b.style.cssText = `left:0;right:0;bottom:0;height:${b}%`;
+    sh.l.style.cssText = `left:0;top:${t}%;bottom:${b}%;width:${l}%`;
+    sh.r.style.cssText = `right:0;top:${t}%;bottom:${b}%;width:${r}%`;
+  };
+  for (const inp of Object.values(inputs)) inp.addEventListener('input', sync);
+  body.append(imgWrap, rows);
+  const frac = await modal({
+    title: '裁剪图像',
+    iconName: 'crop',
+    wide: true,
+    body,
+    actions: [{ label: '取消', value: null }, { label: '应用裁剪', primary: true, value: 'ok' }],
+    onMount: () => { sync(); setTimeout(() => inputs.l.focus(), 30); },
+    collect: () => ({
+      l: Math.min(45, Math.max(0, Number(inputs.l.value) || 0)) / 100,
+      r: Math.min(45, Math.max(0, Number(inputs.r.value) || 0)) / 100,
+      t: Math.min(45, Math.max(0, Number(inputs.t.value) || 0)) / 100,
+      b: Math.min(45, Math.max(0, Number(inputs.b.value) || 0)) / 100,
+    }),
+  });
+  return frac;
+}
+
+async function applyCrop(a) {
+  const frac = await cropModal(a);
+  if (!frac || (!frac.l && !frac.r && !frac.t && !frac.b)) return;
+  pushSnapshot();
+  const res = await ops.cropRaster(a.dataUrl, frac);
+  const r = a.rects[0];
+  const w = r[2] - r[0];
+  a.dataUrl = res.dataUrl;
+  r[1] = r[3] - Math.max(6, w / res.ratio);
+  markDirty();
+  viewer.renderAnnotations();
+  openToolPanel('objprops');
+  toast('已裁剪');
+}
+
+async function replaceRaster(a) {
+  const im = await pickImage();
+  if (!im) return;
+  pushSnapshot();
+  a.dataUrl = im;
+  const r = a.rects[0];
+  const w = r[2] - r[0];
+  r[1] = r[3] - Math.max(6, w / (S.assetRatio || 2.6));
+  markDirty();
+  viewer.renderAnnotations();
+  openToolPanel('objprops');
+  toast('已替换图像');
+}
+
+function buildObjPanel(body) {
+  const a = selectedRaster();
+  body.append(h('div', { class: 'tp-note' },
+    a ? h('span', {}, h('b', { text: a.type === 'sign' ? '已选中签名' : '已选中图片' }), ` · 第 ${a.page} 页`)
+      : h('span', { text: '未选中图片或签名：先在页面上点一张' })));
+  if (!a) {
+    body.append(h('p', { class: 'muted', text: '选中后可以翻转、旋转、裁剪、替换，以及调整层次。' }));
+    return;
+  }
+  const r = a.rects[0];
+  const wPt = Math.round(r[2] - r[0]);
+  const hPt = Math.round(r[3] - r[1]);
+  body.append(h('p', { class: 'muted', style: { fontSize: '11.5px' }, text: `当前 ${wPt} × ${hPt} pt，旋转 ${Math.round(a.rotate || 0)}°` }));
+  body.append(h('div', { class: 'chips' },
+    styleToggle('flipH', a.flipH, '水平翻转', () => { a.flipH = !a.flipH; markDirty(); viewer.renderAnnotations(); openToolPanel('objprops'); }),
+    styleToggle('flipV', a.flipV, '垂直翻转', () => { a.flipV = !a.flipV; markDirty(); viewer.renderAnnotations(); openToolPanel('objprops'); }),
+    styleToggle('rotateCw', !!a.rotate, `旋转 90°（当前 ${Math.round(a.rotate || 0)}°）`, () => {
+      pushSnapshot();
+      rotateRaster(a, 90);
+      markDirty();
+      viewer.renderAnnotations();
+      openToolPanel('objprops');
+    }),
+  ));
+  body.append(h('div', { class: 'chips', style: { marginTop: '6px' } },
+    h('button', { class: 'btn small', text: '裁剪…', onclick: () => applyCrop(a) }),
+    h('button', { class: 'btn small', text: '替换图像…', onclick: () => replaceRaster(a) }),
+  ));
+  body.append(h('div', { class: 'hr' }));
+  body.append(h('div', { class: 'fld-label', text: '层次' }));
+  body.append(h('div', { class: 'chips' },
+    styleToggle('front', false, '置于顶层', () => arrangeAnnot(a, 'front')),
+    styleToggle('back', false, '置于底层', () => arrangeAnnot(a, 'back')),
+  ));
+  body.append(h('div', { class: 'row', style: { marginTop: '10px' } },
+    h('button', { class: 'btn small danger', text: '删除这张图', onclick: () => deleteAnnot(a.id) }),
+  ));
+}
 
 /* ────────────────────────────────────────────────────────────
    基础工具
@@ -812,6 +1122,10 @@ function createAnnot(partial) {
     ...partial,
   };
   if (a.type === 'freetext') a.type = 'textbox';
+  if (a.type === 'textbox') {
+    for (const [k, v] of Object.entries(S.textStyle || {})) if (a[k] === undefined) a[k] = v;
+    if (a.fontSize == null) a.fontSize = S.fontSize;
+  }
   d.annots.push(a);
   markDirty();
   viewer.renderAnnotations();
@@ -819,14 +1133,7 @@ function createAnnot(partial) {
   if (a.type === 'textbox') {
     setTimeout(() => {
       const el = document.querySelector(`.annot[data-id="${a.id}"]`);
-      if (el) {
-        el.focus();
-        const r = document.createRange();
-        r.selectNodeContents(el);
-        const sel = window.getSelection();
-        sel.removeAllRanges();
-        sel.addRange(r);
-      }
+      if (el) viewer.enterTextEdit(el, true);
     }, 60);
   }
   if (a.type === 'note' && !S.silentNote && !a.content) {
@@ -957,6 +1264,8 @@ const TOOL_LIST = [
   ['annotate', 'highlight', '注释', '高亮、便签、手绘、图形'],
   ['fill', 'form', '填写和签名', '表单填写与手写签名'],
   ['edit', 'text', '编辑', '添加文字、图片与签名'],
+  ['textprops', 'bold', '文字格式', '字体、字号、颜色、对齐'],
+  ['objprops', 'image', '图片格式', '翻转、旋转、裁剪、替换'],
   ['export', 'download', '导出', '图片或纯文本'],
   ['compress', 'compress', '优化 PDF', '重采样降低体积'],
   ['redact', 'redact', '修订', '真正抹掉内容（栅格化）'],
@@ -1008,7 +1317,11 @@ function openToolPanel(key) {
   grid.append(head, body);
   const d = active;
 
-  if (key === 'annotate') {
+  if (key === 'textprops') {
+    buildTextPanel(body);
+  } else if (key === 'objprops') {
+    buildObjPanel(body);
+  } else if (key === 'annotate') {
     body.append(h('p', { text: '选一种注释工具，然后在页面上操作。选中文本后点高亮会自动吸附到文字行。' }));
     const chips = h('div', { class: 'chips' });
     for (const [t, name] of [['highlight', '高亮'], ['underline', '下划线'], ['strikeout', '删除线'], ['note', '便签'], ['textbox', '文本框'], ['ink', '手绘'], ['rect', '矩形'], ['arrow', '箭头'], ['select', '选择']]) {
@@ -1803,7 +2116,7 @@ async function showAbout() {
     title: '关于 MiniPDF',
     iconName: 'info',
     body: h('div', {},
-      h('p', { html: '<b>MiniPDF 1.0.1</b> — 用同一套界面复刻 Acrobat 的阅读、注释、页面编排与填写签名工作流。' }),
+      h('p', { html: '<b>MiniPDF 1.0.2</b> — 用同一套界面复刻 Acrobat 的阅读、注释、页面编排与填写签名工作流。' }),
       h('p', { class: 'muted', text: `Electron ${info.electron} · Chromium ${info.chrome} · pdf.js 4.10 · pdf-lib 1.17` }),
       h('p', { class: 'muted', text: 'PDF 渲染由 pdf.js 完成，写回由 pdf-lib 完成；所有处理都在本机。' }),
       h('p', { class: 'muted', text: `Agent 桥：http://127.0.0.1:${info.bridgePort || 7857}/current_view` }),
@@ -1900,7 +2213,7 @@ function bindUI() {
   }, 520));
 
   $('#clearRecent').addEventListener('click', async () => { await P.recentClear(); renderRecent(); });
-  $('#appVer').textContent = 'MiniPDF 1.0.1 · pdf.js + pdf-lib';
+  $('#appVer').textContent = 'MiniPDF 1.0.2 · pdf.js + pdf-lib';
 
   // 拖放文件
   let dragDepth = 0;
@@ -2053,6 +2366,29 @@ function registerBridge() {
 /* ────────────────────────────────────────────────────────────
    自检钩子
    ──────────────────────────────────────────────────────────── */
+/* 预览 canvas 上的墨量：非透明像素数，用来证明「真的画上去了」 */
+function canvasInk(cv) {
+  if (!cv || !cv.width || !cv.height) return 0;
+  const ctx = cv.getContext('2d');
+  const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+  let n = 0;
+  for (let i = 3; i < d.length; i += 4) if (d[i] > 24) n++;
+  return n;
+}
+
+/* 这张 canvas 的主要颜色（取墨色平均），用来验证「颜色真的换了」 */
+function canvasInkColor(cv) {
+  if (!cv || !cv.width || !cv.height) return null;
+  const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+  let r = 0, g = 0, b = 0, n = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] < 200) continue;
+    r += d[i]; g += d[i + 1]; b += d[i + 2]; n++;
+  }
+  if (!n) return null;
+  return [Math.round(r / n), Math.round(g / n), Math.round(b / n)];
+}
+
 window.__minipdfSmoke = async (scene = 'read') => {
   const out = { scene, steps: [] };
   try {
@@ -2107,7 +2443,20 @@ window.__minipdfSmoke = async (scene = 'read') => {
       await new Promise((r) => setTimeout(r, 900));
     } else if (scene === 'note-modal') {
       S.tool = 'note';
-      await promptNote({ id: 'demo', page: 1, type: 'note', rects: [[72, 560, 92, 580]] });
+      const pending = promptNote({ id: 'demo', page: 1, type: 'note', rects: [[72, 560, 92, 580]] });
+      // 无头环境里自己把对话框填完，否则会一直等
+      await new Promise((r) => setTimeout(r, 320));
+      const ta = document.querySelector('.modal textarea');
+      out.modalOpen = !!ta;
+      if (ta) {
+        ta.value = '自动填写：这句话来自自检脚本';
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      const ok = Array.from(document.querySelectorAll('.modal-foot .btn')).find((b) => b.classList.contains('primary'));
+      if (ok) ok.click();
+      await pending;
+      await new Promise((r) => setTimeout(r, 200));
+      out.noteContent = active.annots.find((a) => a.type === 'note')?.content || null;
       out.steps.push('note');
     } else if (scene === 'select') {
       const spans = Array.from(document.querySelectorAll('.page .textLayer span')).filter((x) => x.textContent.trim().length > 3);
@@ -2172,27 +2521,39 @@ window.__minipdfSmoke = async (scene = 'read') => {
       await new Promise((r) => setTimeout(r, 250));
       out.boxCreated = active.annots.filter((a) => a.type === 'textbox').length;
       const box = document.querySelector('.annot.textbox');
+      const edit = box && box.querySelector('.tb-edit');
       out.boxInDom = !!box;
-      if (box) {
-        box.focus();
-        box.textContent = '编辑功能测试：第一行中文，第二行用来验证自动换行与高度增长，第三行再长一点看看会不会被裁掉。';
-        box.dispatchEvent(new Event('input', { bubbles: true }));
-        out.focused = document.activeElement === box;
+      out.editInDom = !!edit;
+      out.editingClass = !!document.querySelector('.annot.textbox.editing');
+      if (edit) {
+        out.focused = document.activeElement === edit;
+        out.selectAll = window.getSelection().toString().length;
+        edit.textContent = '编辑功能测试：第一行中文，第二行用来验证自动换行与高度增长，第三行再长一点看看会不会被裁掉。';
+        edit.dispatchEvent(new Event('input', { bubbles: true }));
         // 在框里按退格只能删字，不能把整个框删掉
         const before = active.annots.filter((a) => a.type === 'textbox').length;
-        box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
+        edit.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
         out.backspaceKeptBox = active.annots.filter((a) => a.type === 'textbox').length === before;
       }
       const tb = active.annots.find((a) => a.type === 'textbox');
       // 回车在 contenteditable 里是 <div>，取文本要还原成 \n
-      if (box) {
-        box.innerHTML = '第一行文字<div>第二行：按回车换行</div><div>第三行</div>';
-        box.dispatchEvent(new Event('input', { bubbles: true }));
+      if (edit) {
+        edit.innerHTML = '第一行文字<div>第二行：按回车换行</div><div>第三行</div>';
+        edit.dispatchEvent(new Event('input', { bubbles: true }));
       }
       out.multiLine = tb ? tb.content.split('\n').length : 0;
       out.textContent = tb ? tb.content.slice(0, 12) : null;
       out.textRect = tb ? tb.rects[0].map((v) => +v.toFixed(1)) : null;
       out.grewHeight = tb ? +(tb.rects[0][3] - tb.rects[0][1]).toFixed(1) : 0;
+      // 预览 canvas 上确实画了字（非透明像素）——输入层可见时 canvas 是隐藏的，先失焦
+      if (edit) {
+        edit.blur();
+        await new Promise((r) => setTimeout(r, 200));
+        out.canvasPixels = canvasInk(document.querySelector('.annot.textbox .tb-canvas'));
+        const cv0 = document.querySelector('.annot.textbox .tb-canvas');
+        out.canvasWh = cv0 ? [cv0.width, cv0.height] : null;
+        out.canvasInkBox = document.querySelector('.annot.textbox') ? 1 : 0;
+      }
 
       // 2) 签名：宽高比不能被拉扁
       if (clean) { out.signRatio = null; }
@@ -2314,6 +2675,271 @@ window.__minipdfSmoke = async (scene = 'read') => {
         }
         out.steps.push('edit-saved');
       }
+    } else if (scene === 'text-props' || scene === 'text-save') {
+      /* 一个文本框，从工具条建出来，选中后逐项改「格式」面板的每一项 */
+      openToolPanel('annotate');
+      const tbBtn = document.querySelector('#annotBar button[data-tool="textbox"]');
+      if (tbBtn) tbBtn.click(); else setTool('textbox');
+      await new Promise((r) => setTimeout(r, 120));
+      const pageEl = document.querySelector('.page');
+      const pr = pageEl.getBoundingClientRect();
+      const at = (x, y, id = 1) => {
+        const o = { bubbles: true, cancelable: true, clientX: pr.left + x, clientY: pr.top + y, pointerId: id, pointerType: 'mouse', isPrimary: true };
+        pageEl.dispatchEvent(new PointerEvent('pointerdown', o));
+        pageEl.dispatchEvent(new PointerEvent('pointerup', o));
+      };
+      at(150, 200);
+      await new Promise((r) => setTimeout(r, 220));
+      let box = document.querySelector('.annot.textbox');
+      let edit = box && box.querySelector('.tb-edit');
+      edit.textContent = '格式测试 Format ABC';
+      edit.dispatchEvent(new Event('input', { bubbles: true }));
+      edit.blur();
+      await new Promise((r) => setTimeout(r, 180));
+
+      const tb = active.annots.find((a) => a.type === 'textbox');
+      out.created = !!tb;
+      // 选中它（选择工具下点一下）
+      setTool('select');
+      await new Promise((r) => setTimeout(r, 100));
+      box = document.querySelector('.annot.textbox');
+      const br = box.getBoundingClientRect();
+      const po = { bubbles: true, cancelable: true, clientX: br.left + 4, clientY: br.top + 4, pointerId: 2, pointerType: 'mouse', isPrimary: true };
+      box.dispatchEvent(new PointerEvent('pointerdown', po));
+      box.dispatchEvent(new PointerEvent('pointerup', po));
+      await new Promise((r) => setTimeout(r, 120));
+      out.selected = viewer.selectedId === tb.id;
+      openToolPanel('textprops');
+      await new Promise((r) => setTimeout(r, 120));
+
+      const panelBody = () => document.querySelector('#toolsGrid .tpbody');
+      const inkNow = () => canvasInk(document.querySelector('.annot.textbox .tb-canvas'));
+      const colorNow = () => canvasInkColor(document.querySelector('.annot.textbox .tb-canvas'));
+      const hNow = () => +(tb.rects[0][3] - tb.rects[0][1]).toFixed(1);
+      const numInput = (i) => panelBody().querySelectorAll('input[type="number"]')[i];
+      const setNum = async (i, v) => {
+        const el = numInput(i);
+        el.value = String(v);
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 130));
+        return Number(el.value);
+      };
+      // 面板不是每次都重建，这里用「重新取一次 DOM」的方式保证读到新状态
+      const panelState = () => {
+        const b = panelBody();
+        return {
+          font: b.querySelector('select.sel') ? b.querySelector('select.sel').value : null,
+          size: Number(b.querySelectorAll('input[type="number"]')[0].value),
+          color: (b.querySelector('input[type="color"]') || {}).value,
+          lineSpacing: Number(b.querySelectorAll('input[type="number"]')[1].value),
+          active: Array.from(b.querySelectorAll('.chip.active')).map((x) => x.title || x.textContent.trim()),
+        };
+      };
+
+      out.base = { h: hNow(), ink: inkNow(), color: colorNow(), ...panelState() };
+
+      // 1) 字体：宋体
+      const fsel = panelBody().querySelector('select.sel');
+      fsel.value = 'SimSun';
+      fsel.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 150));
+      out.font = { applied: tb.font, panel: panelState().font };
+
+      // 2) 字号：24
+      out.size = { applied: null, h: 0, ink: 0 };
+      await setNum(0, 24);
+      out.size.applied = tb.fontSize;
+      out.size.h = hNow();
+      out.size.ink = inkNow();
+
+      // 3) 颜色：红
+      const col = panelBody().querySelector('input[type="color"]');
+      col.value = '#e8453c';
+      col.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 150));
+      out.color = { applied: tb.color, px: colorNow() };
+
+      // 4) 字形：加粗 + 斜体 + 下划线
+      const clickTitle = async (t) => {
+        const b = Array.from(panelBody().querySelectorAll('button')).find((x) => x.title === t);
+        if (!b) return false;
+        b.click();
+        await new Promise((r) => setTimeout(r, 140));
+        return true;
+      };
+      out.glyph = {};
+      out.glyph.boldBtn = await clickTitle('加粗');
+      out.glyph.italicBtn = await clickTitle('斜体');
+      out.glyph.underlineBtn = await clickTitle('下划线');
+      out.glyph.state = { bold: tb.bold, italic: tb.italic, underline: tb.underline };
+      out.glyph.ink = inkNow();
+
+      // 5) 对齐：居中；行距 2.0
+      await clickTitle('居中');
+      out.align = tb.align;
+      out.alignInk = inkNow();
+      out.lineSpacing = await setNum(1, 2);
+      out.lineSpacingH = hNow();
+
+      // 6) 字符间距 / 水平缩放：用固定短串量，避免折行干扰读数
+      const probeW = () => {
+        const probe = { ...tb, content: 'AVAVAVAV' };
+        const lay = ops.textBoxLines(probe, 520);
+        return lay.lines.length ? +lay.lines[0].w.toFixed(1) : 0;
+      };
+      const w0 = probeW();
+      out.charSpacing = await setNum(3, 4);
+      out.charSpacingW = { before: w0, after: probeW() };
+      out.hScale = await setNum(4, 160);
+      out.hScaleW = probeW();
+
+      // 7) 项目符号 + 不透明度
+      const bullet = Array.from(panelBody().querySelectorAll('button')).find((x) => x.textContent.trim() === '• 项目符号');
+      if (bullet) { bullet.click(); await new Promise((r) => setTimeout(r, 140)); }
+      out.list = tb.list;
+      out.opacity = await setNum(5, 0.45);
+      out.finalInk = inkNow();
+
+      // 8) 旋转 90° 与翻转
+      const rotBtn = Array.from(panelBody().querySelectorAll('button')).find((x) => (x.title || '').startsWith('旋转'));
+      if (rotBtn) { rotBtn.click(); await new Promise((r) => setTimeout(r, 140)); }
+      out.rotate = tb.rotate;
+      out.rotInk = inkNow();
+
+      // 收尾：转回 0°、不透明度回到 1，留一个正常可读的成品（上面的读数已经证明这两项生效）
+      const rotBtn2 = () => Array.from(panelBody().querySelectorAll('button')).find((x) => (x.title || '').startsWith('旋转'));
+      for (let i = 0; i < 4 && tb.rotate; i++) {
+        const b = rotBtn2();
+        if (!b) break;
+        b.click();
+        await new Promise((r) => setTimeout(r, 130));
+      }
+      out.rotateBack = tb.rotate;
+      out.opacityBack = await setNum(5, 1);
+      out.finalViewInk = inkNow();
+
+      out.styleSnapshot = {
+        font: tb.font, fontSize: tb.fontSize, color: tb.color, bold: tb.bold, italic: tb.italic,
+        underline: tb.underline, align: tb.align, lineSpacing: tb.lineSpacing, paraSpacing: tb.paraSpacing,
+        charSpacing: tb.charSpacing, hScale: tb.hScale, list: tb.list, opacity: tb.opacity, rotate: tb.rotate,
+      };
+
+      // 9) 存盘：像素里应该能找到红色，且位置/尺寸变成写进文件的那块
+      if (scene === 'text-save') {
+        const bytes = await ops.savePdf(active.bytes, active.annots.filter((a) => !a.inFile), {}, {});
+        out.savedBytes = bytes.length;
+        const dd = await loadPdf(bytes);
+        const shot = await renderPageOffscreen(dd.pdf, 1, 2);
+        const pg = await dd.pdf.getPage(1);
+        const v = pg.getViewport({ scale: 2 });
+        const rr = v.convertToViewportRectangle(tb.rects[0]);
+        const gx = Math.max(0, Math.floor(Math.min(rr[0], rr[2])));
+        const gy = Math.max(0, Math.floor(Math.min(rr[1], rr[3])));
+        const gw = Math.max(1, Math.ceil(Math.abs(rr[2] - rr[0])));
+        const gh = Math.max(1, Math.ceil(Math.abs(rr[3] - rr[1])));
+        const px = shot.getContext('2d').getImageData(gx, gy, gw, gh).data;
+        let red = 0, dark = 0;
+        for (let i = 0; i < px.length; i += 4) {
+          if (px[i] > 150 && px[i + 1] < 110 && px[i + 2] < 110) red++;
+          if (px[i] < 120 && px[i + 1] < 120 && px[i + 2] < 120) dark++;
+        }
+        out.savedRed = red;
+        out.savedDark = dark;
+        await P.writeFile('D:/REA/minipdf/build/text-styled.pdf', bytes);
+        out.savedPath = 'D:/REA/minipdf/build/text-styled.pdf';
+        // 把这张字图单独存一份，方便肉眼验字形与行距
+        const png = ops.textboxToPng(tb, 4);
+        const bin = Uint8Array.from(atob(png.split(',')[1]), (c) => c.charCodeAt(0));
+        await P.writeFile('D:/REA/minipdf/build/text-styled.png', bin);
+        // 重开一遍，检查文件里真的有这张字图（XObject）而页面文本没变
+        await openFromBytes(bytes, { name: 'text-styled.pdf' });
+        await new Promise((r) => setTimeout(r, 900));
+        const p1 = await active.pdf.getPage(1);
+        const ld = await window.PDFLib.PDFDocument.load(bytes);
+        const res = ld.getPages()[0].node.Resources();
+        const xo = res && res.lookup(window.PDFLib.PDFName.of('XObject'));
+        out.xobjects = xo ? xo.keys().length : 0;
+        out.reopenedPages = active.pages.length;
+      }
+      out.steps.push('text-props');
+    } else if (scene === 'img-props') {
+      /* 图片：选中后走「图片格式」面板，翻转 / 旋转 / 裁剪 */
+      const ic = document.createElement('canvas');
+      ic.width = 400; ic.height = 100;
+      const ictx = ic.getContext('2d');
+      ictx.fillStyle = '#1473e6';
+      ictx.fillRect(0, 0, 400, 100);
+      ictx.fillStyle = '#ffe14d';
+      ictx.fillRect(0, 0, 80, 100);
+      S.pendingImage = ic.toDataURL('image/png');
+      S.assetRatio = 4;
+      const pageEl = document.querySelector('.page');
+      const pr = pageEl.getBoundingClientRect();
+      const tap = (x, y, id) => {
+        const o = { bubbles: true, cancelable: true, clientX: pr.left + x, clientY: pr.top + y, pointerId: id, pointerType: 'mouse', isPrimary: true };
+        pageEl.dispatchEvent(new PointerEvent('pointerdown', o));
+        pageEl.dispatchEvent(new PointerEvent('pointerup', o));
+      };
+      setTool('image');
+      tap(200, 300, 1);
+      await new Promise((r) => setTimeout(r, 220));
+      const im = active.annots.find((a) => a.type === 'image');
+      out.placed = !!im;
+      out.ratio = im ? +((im.rects[0][2] - im.rects[0][0]) / (im.rects[0][3] - im.rects[0][1])).toFixed(2) : null;
+
+      setTool('select');
+      await new Promise((r) => setTimeout(r, 100));
+      const imgEl = document.querySelector('.annot.img');
+      const ir = imgEl.getBoundingClientRect();
+      const opts = { bubbles: true, cancelable: true, clientX: ir.left + 8, clientY: ir.top + 8, pointerId: 2, pointerType: 'mouse', isPrimary: true };
+      imgEl.dispatchEvent(new PointerEvent('pointerdown', opts));
+      imgEl.dispatchEvent(new PointerEvent('pointerup', opts));
+      await new Promise((r) => setTimeout(r, 150));
+      out.panel = S.panelTool;
+      out.selected = viewer.selectedId === im.id;
+      out.delBadge = !!document.querySelector('.annot.img .del');
+
+      const findBtn = (t) => Array.from(document.querySelectorAll('#toolsGrid .tpbody button')).find((x) => (x.title || '').startsWith(t) || x.textContent.trim().startsWith(t));
+      const flip = findBtn('水平翻转');
+      out.flipBtn = !!flip;
+      if (flip) { flip.click(); await new Promise((r) => setTimeout(r, 150)); }
+      out.flipH = !!im.flipH;
+      out.imgTransform = document.querySelector('.annot.img')?.style.transform || '';
+
+      const rot = findBtn('旋转 90°');
+      out.rotBtn = !!rot;
+      const w0 = im.rects[0][2] - im.rects[0][0];
+      const h0 = im.rects[0][3] - im.rects[0][1];
+      if (rot) { rot.click(); await new Promise((r) => setTimeout(r, 180)); }
+      out.rotate = im.rotate;
+      out.rectSwap = {
+        before: [+w0.toFixed(1), +h0.toFixed(1)],
+        after: [+(im.rects[0][2] - im.rects[0][0]).toFixed(1), +(im.rects[0][3] - im.rects[0][1]).toFixed(1)],
+      };
+
+      // 裁剪：直接调内核，验证比例与像素
+      const cr = await ops.cropRaster(im.dataUrl, { l: 0.25, r: 0.25 });
+      out.crop = { ratio: +cr.ratio.toFixed(2), w: cr.w, h: cr.h };
+      const img2 = await new Promise((res) => { const i = new Image(); i.onload = () => res(i); i.src = cr.dataUrl; });
+      const cc = document.createElement('canvas');
+      cc.width = img2.naturalWidth; cc.height = img2.naturalHeight;
+      const cctx = cc.getContext('2d');
+      cctx.drawImage(img2, 0, 0);
+      out.cropLeftPx = Array.from(cctx.getImageData(0, 0, 1, 1).data);
+      out.cropSize = [img2.naturalWidth, img2.naturalHeight];
+
+      // 换回不旋转，保存一次，确认写进文件后仍有像素
+      pushSnapshot();
+      im.dataUrl = cr.dataUrl;
+      im.rects[0][1] = im.rects[0][3] - Math.max(6, (im.rects[0][2] - im.rects[0][0]) / cr.ratio);
+      const bytes = await ops.savePdf(active.bytes, active.annots.filter((a) => !a.inFile), {}, {});
+      out.savedBytes = bytes.length;
+      const dd = await loadPdf(bytes);
+      const ld = await window.PDFLib.PDFDocument.load(bytes);
+      const res = ld.getPages()[0].node.Resources();
+      const xo = res && res.lookup(window.PDFLib.PDFName.of('XObject'));
+      out.xobjects = xo ? xo.keys().length : 0;
+      out.steps.push('img-props');
     } else if (scene === 'savedview') {
       S.silentNote = true;
       createAnnot({ page: 1, type: 'highlight', rects: [[72, 640, 520, 655], [72, 620, 300, 635]], color: '#ffe14d', content: '双行高亮' });

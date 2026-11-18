@@ -125,3 +125,86 @@ MiniPDF 的验收表和"没做的"清单，就是这三条在工程上的落点�
 | 签名不变形 | 240×80 → `signRatio: 3` |
 | 白底生效 | 同区域黑色像素 7713（白底）vs 8293（透明） |
 | 存进去能看见 | 文本区 3349 个暗像素、3 个 Image XObject |
+
+---
+
+## 1.0.2：从安装包里把「格式」命令面挖出来，再逐条落地
+
+### 取证：这次读到了界面定义，不是猜
+
+1.0.0 时 `AcroPro.msi` 的 `!Feature` / `!UIText` 表是压缩流，`strings` 读不出文案，
+只能按"公开可见行为"重建界面。1.0.2 换了一条路径：
+
+| 步骤 | 命令 / 位置 | 拿到什么 |
+|---|---|---|
+| 1 | 7-Zip 打开 `Setup.exe` → `AcroPro.msi` 的 `Languages.cab` | 25 个语言的界面资源包 |
+| 2 | 解出 `.aapp1` 等文件 | XML 结构的界面定义（61 个模块、275 个命令） |
+| 3 | 在 `edit.aapp1` 里找 `<RHP>` 节点 | 「编辑 PDF」工具条的格式命令全集 |
+
+提取到的格式命令（这是 Acrobat 自己的命令名，不是我编的菜单）：
+
+```
+TouchUpFontName  TouchUpFontSize  TouchUpFillColor
+TouchUpBold  TouchUpItalic  TouchUpUnderline  TouchUpSuperscript  TouchUpSubscript
+TouchUpBulletedList  TouchUpNumberedList
+TouchUpLeftAlign  TouchUpCenterAlign  TouchUpRightAlign  TouchUpJustifyAlign
+TouchUpLineSpacing  TouchUpParagraphSpacing
+TouchUpHorizontalScaling  TouchUpCharacterSpacing
+```
+
+同层还有 `TouchUpFlipHorizontal / FlipVertical / RotateClockwise / Crop / ReplaceImage /
+BringToFront / SendToBack`，以及 `ScanDocOCR`。
+
+**这就是 1.0.2 的功能面清单**：不按"我觉得该有什么"排，按安装包里的命令排。
+读不出的（OCR 引擎、字体嵌入策略）仍然标 ❌，不假装。
+
+### 根因：不是界面问题，是画布返回了空白
+
+用户第二次反馈"编辑功能还是不能用"。这次没有直接改 UI，而是先问"字到底有没有被画出来"：
+
+```
+renderTextBox(a, w, h, scale)
+  ├── src = canvas;  drawLines(ctx, ...)     ← 字画在这里
+  ├── if (!rot && !flipH && !flipV) return out;   ← 返回的是另一张空白画布
+```
+
+不旋转不翻转是最常走的分支，于是：
+
+- 预览 canvas 全透明 → "加了字看不见"；
+- `textboxToPng()` 得到全透明 PNG → 存进 PDF 的是一张透明图 → "保存了也没有"。
+
+所有中间状态（`a.content`、`a.rects`、`boxCreated: 1`）都是对的，所以上一版的自检
+**看不出问题** —— 它验的是"我建了框、我改了文本"，不是"像素里有没有字"。
+
+修法两行：快路径返回 `src`；同时给自检加一条**像素断言**：
+
+```js
+canvasInk(canvas)   // alpha>24 的像素数，编辑场景从 0 → 4332
+```
+
+REA 那句"证据不全导致的没看到不等于不存在"，反过来也成立：
+**状态对不等于产物对**。验收要读产物。
+
+### 证据（`MINIPDF_SCENE=text-props` / `text-save` / `img-props`）
+
+| 主张 | 判据 | 读数 |
+|---|---|---|
+| 字体真的换了 | 面板值 vs 注释对象 | 宋体 / `SimSun` 一致 |
+| 字号改了重排 | 框高 | 12pt → 19.8pt；24pt → 67.4pt |
+| 颜色真的换了 | 画布墨色均值 | `#e8453c` → 读回 `(232,69,60)` |
+| 粗/斜/下划线 | 对象 + 墨量 | 三项 true，墨量 4659 → 6977 |
+| 对齐 | 对象 | `center`，重绘后墨量平稳（6973） |
+| 行距 | 框高 | 2.0 倍 → 100pt（= 4 + 2×48） |
+| 字距 | 同串宽度（固定 8 字符、520pt 宽，排除折行） | 99.8 → 131.8（+4×8） |
+| 水平缩放 | 同上 | 160% → 191.6 |
+| 旋转不压扁 | 换尺寸排版再旋转 | 转 90° 后墨量 10012（≈原 10016），字不变形 |
+| 存进文件 | 重开后页面像素 | 7883 个红色像素、1 个 Image XObject |
+| 图片转 90° 不拉扁 | 矩形宽高 | 132×33 → 33×132 |
+| 裁剪 | 裁掉左右各 25% | 400×100 → 200×100，比例 2.0，左上角仍是原图蓝 `(20,115,230)` |
+
+### 这一版改掉的两个"看不出来"的坑
+
+1. **输入层和 canvas 用两套参数**：改字号后 canvas 重绘了，可 contenteditable 还按旧字号显示，
+   边打字边改会跳。现在 `styleEditLayer()` 是唯一来源，两边同时更新。
+2. **回车后框的位置算错**：`syncHeight()` 里 `el.style.top = (rect[3]-hpt) + 'px'` 把
+   PDF 点当屏幕像素用，缩放不是 100% 时框会跳走。改成直接调 `placeTextbox()` 走同一套换算。

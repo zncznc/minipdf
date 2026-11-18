@@ -12,3 +12,8 @@ build/bridge.log
 *.log
 .DS_Store
 Thumbs.db
+
+# 全场景回归截图与样例产物
+build/smoke/
+build/text-styled.pdf
+build/text-styled.png

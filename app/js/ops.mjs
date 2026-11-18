@@ -125,44 +125,253 @@ function dataUrlBytes(url) {
   return out;
 }
 
+/* ────────────────────────────────────────────────────────────
+   文字排版内核
+   预览和写入共用这一套，保证「看到的」就是「存进去的」
+   ──────────────────────────────────────────────────────────── */
+export const TEXT_STYLE_DEFAULT = Object.freeze({
+  font: 'Microsoft YaHei',
+  fontSize: 12,
+  color: '#111111',
+  bold: false,
+  italic: false,
+  underline: false,
+  script: 'none',      // none | sup | sub
+  align: 'left',       // left | center | right | justify
+  lineSpacing: 1.32,
+  paraSpacing: 0,
+  charSpacing: 0,
+  hScale: 100,         // 水平缩放 %
+  list: 'none',        // none | bullet | number
+  opacity: 1,
+  rotate: 0,
+  flipH: false,
+  flipV: false,
+});
+
+/* Acrobat「编辑 PDF → 格式」里的字体下拉，对应本机可用的同名字体 */
+export const FONT_CHOICES = [
+  ['Microsoft YaHei', '微软雅黑'],
+  ['SimSun', '宋体'],
+  ['SimHei', '黑体'],
+  ['KaiTi', '楷体'],
+  ['FangSong', '仿宋'],
+  ['DengXian', '等线'],
+  ['Arial', 'Arial'],
+  ['Times New Roman', 'Times New Roman'],
+  ['Calibri', 'Calibri'],
+  ['Georgia', 'Georgia'],
+  ['Courier New', 'Courier New'],
+];
+
+let _measure = null;
+function measureCtx() {
+  if (!_measure) {
+    const c = document.createElement('canvas');
+    c.width = c.height = 8;
+    _measure = c.getContext('2d');
+  }
+  return _measure;
+}
+
+function familyOf(a) {
+  return `"${a.font || 'Microsoft YaHei'}", "Microsoft YaHei", "Segoe UI", sans-serif`;
+}
+
+function fontCss(a, size) {
+  const weight = a.bold ? '700' : '400';
+  const style = a.italic ? 'italic' : 'normal';
+  return `${style} ${weight} ${size}px ${familyOf(a)}`;
+}
+
+function nominalSize(a) { return Math.max(1, Number(a.fontSize) || 12); }
+function scriptScale(a) { return a.script === 'sup' || a.script === 'sub' ? 0.62 : 1; }
+function num(v, d) { const n = Number(v); return Number.isFinite(n) ? n : d; }
+
+/**
+ * 排版：折行、每行宽度、行高、段间距。
+ * 单位统一用 PDF 点（1pt = 1px 的画布坐标）。
+ */
+export function textBoxLines(a, widthPt) {
+  const fs = nominalSize(a);
+  const size = fs * scriptScale(a);
+  const hs = Math.max(10, num(a.hScale, 100)) / 100;
+  const cs = num(a.charSpacing, 0);
+  const pad = 2;
+  const maxW = Math.max(8, widthPt - pad * 2);
+  const ctx = measureCtx();
+  ctx.font = fontCss(a, size);
+  const charW = (ch) => ctx.measureText(ch).width * hs + cs;
+
+  const paras = String(a.content == null ? '' : a.content).split('\n');
+  const lines = [];
+  paras.forEach((para, pi) => {
+    let text = para;
+    if (a.list === 'bullet') text = '• ' + para;
+    else if (a.list === 'number') text = (pi + 1) + '. ' + para;
+    if (!text) { lines.push({ text: '', w: 0, para: pi, last: true }); return; }
+    let cur = '';
+    let curW = 0;
+    for (const ch of text) {
+      const cw = charW(ch);
+      if (cur && curW + cw > maxW) {
+        lines.push({ text: cur, w: curW, para: pi, last: false });
+        cur = ch; curW = cw;
+      } else { cur += ch; curW += cw; }
+    }
+    if (cur) lines.push({ text: cur, w: curW, para: pi, last: true });
+  });
+  return {
+    lines, fs, size, pad, maxW, hs, cs,
+    lineH: fs * Math.max(0.5, num(a.lineSpacing, 1.32)),
+    paraSpacing: Math.max(0, num(a.paraSpacing, 0)),
+  };
+}
+
+/** 文本块自然高度（pt）：段落数决定段间距，行数决定行高 */
+export function textBoxHeight(a, widthPt) {
+  const lay = textBoxLines(a, widthPt);
+  const paras = new Set(lay.lines.map((l) => l.para)).size;
+  return lay.pad * 2 + lay.lines.length * lay.lineH + Math.max(0, paras - 1) * lay.paraSpacing;
+}
+
+function drawLines(ctx, a, lay, widthPt) {
+  const { lines, fs, size, pad, maxW, lineH, paraSpacing } = lay;
+  ctx.font = fontCss(a, size);
+  ctx.fillStyle = a.color || '#111111';
+  ctx.globalAlpha = Math.max(0, Math.min(1, num(a.opacity, 1)));
+  ctx.textBaseline = 'alphabetic';
+  ctx.textAlign = 'left';
+  const lift = a.script === 'sup' ? -fs * 0.36 : a.script === 'sub' ? fs * 0.18 : 0;
+  let y = pad;
+  let prev = lines.length ? lines[0].para : 0;
+  for (const ln of lines) {
+    if (ln.para !== prev) { y += paraSpacing; prev = ln.para; }
+    const baseline = y + fs * 0.8 + lift;
+    let extra = 0;
+    if (a.align === 'justify' && !ln.last && ln.text.length > 1) {
+      extra = Math.max(0, (maxW - ln.w) / (ln.text.length - 1));
+    }
+    const lineW = ln.w + extra * Math.max(0, ln.text.length - 1);
+    let x = pad;
+    if (a.align === 'center') x = pad + (maxW - lineW) / 2;
+    else if (a.align === 'right') x = pad + (maxW - lineW);
+    const startX = x;
+    for (const ch of ln.text) {
+      const cw = ctx.measureText(ch).width;
+      if (ch !== ' ') {
+        if (Math.abs(lay.hs - 1) > 1e-3) {
+          ctx.save();
+          ctx.translate(x, baseline);
+          ctx.scale(lay.hs, 1);
+          ctx.fillText(ch, 0, 0);
+          ctx.restore();
+        } else {
+          ctx.fillText(ch, x, baseline);
+        }
+      }
+      x += cw * lay.hs + lay.cs + extra;
+    }
+    if (a.underline && ln.text.trim()) {
+      ctx.fillRect(startX, baseline + fs * 0.16, Math.max(1, lineW), Math.max(0.6, fs * 0.055));
+    }
+    y += lineH;
+  }
+  ctx.globalAlpha = 1;
+}
+
+/**
+ * 文本块 → canvas。预览和保存都走这里。
+ * rotate / flipH / flipV 作用在整块字上，边框不变。
+ */
+export function renderTextBox(a, widthPt, heightPt, scale = 3) {
+  const W = Math.max(8, widthPt);
+  const H = Math.max(8, heightPt);
+  const rot = ((Math.round(num(a.rotate, 0)) % 360) + 360) % 360;
+  // 转 90/270 时按「换过来」的尺寸排版，转回去正好铺满整框，字不会被压扁
+  const swap = rot === 90 || rot === 270;
+  const layW = swap ? H : W;
+  const layH = swap ? W : H;
+
+  const src = document.createElement('canvas');
+  src.width = Math.max(1, Math.round(layW * scale));
+  src.height = Math.max(1, Math.round(layH * scale));
+  const ctx = src.getContext('2d');
+  ctx.scale(scale, scale);
+  drawLines(ctx, a, textBoxLines(a, layW), layW);
+
+  if (!rot && !a.flipH && !a.flipV) {
+    src._scale = scale;
+    return src;
+  }
+
+  const out = document.createElement('canvas');
+  out.width = Math.max(1, Math.round(W * scale));
+  out.height = Math.max(1, Math.round(H * scale));
+  const octx = out.getContext('2d');
+  octx.save();
+  octx.translate(out.width / 2, out.height / 2);
+  if (rot) octx.rotate((rot * Math.PI) / 180);
+  octx.scale(a.flipH ? -1 : 1, a.flipV ? -1 : 1);
+  octx.drawImage(src, -src.width / 2, -src.height / 2);
+  octx.restore();
+  return out;
+}
+
 /** 文本框 → 位图（避免 CJK 字体嵌入问题，保证所见即所得） */
-export function textboxToPng(a, scale = 2) {
+export function textboxToPng(a, scale = 3) {
   const rect = a.rects[0];
   const w = Math.max(24, rect[2] - rect[0]);
   const hh = Math.max(14, rect[3] - rect[1]);
-  const pad = 2;
-  const fs = a.fontSize || 12;
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.ceil(w * scale);
-  canvas.height = Math.ceil(hh * scale);
-  const ctx = canvas.getContext('2d');
-  ctx.scale(scale, scale);
-  ctx.fillStyle = '#111111';
-  ctx.font = `${fs}px "Microsoft YaHei", "Segoe UI", sans-serif`;
-  ctx.textBaseline = 'top';
-  const text = a.content || '';
-  const maxW = w - pad * 2;
-  let line = '';
-  // 与编辑时的 CSS 对齐：line-height 1.32，半行距 =（行高−字号）/2
-  const lineH = fs * 1.32;
-  let y = pad + (lineH - fs) * 0.5;
-  for (const ch of text) {
-    if (ch === '\n') {
-      ctx.fillText(line, pad, y);
-      line = '';
-      y += lineH;
-      continue;
-    }
-    const test = line + ch;
-    if (ctx.measureText(test).width > maxW && line) {
-      ctx.fillText(line, pad, y);
-      line = ch;
-      y += lineH;
-    } else line = test;
-    if (y > hh - lineH) break;
-  }
-  if (line) ctx.fillText(line, pad, y);
-  return canvas.toDataURL('image/png');
+  return renderTextBox(a, w, hh, scale).toDataURL('image/png');
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+/** 图片/签名的翻转、旋转：先转成位图再嵌入，不依赖 pdf-lib 的变换原点 */
+export async function transformRaster(dataUrl, opts = {}) {
+  const rot = ((Math.round(num(opts.rotate, 0)) % 360) + 360) % 360;
+  if (!rot && !opts.flipH && !opts.flipV) return dataUrl;
+  const img = await loadImage(dataUrl);
+  const c = document.createElement('canvas');
+  c.width = img.naturalWidth || img.width;
+  c.height = img.naturalHeight || img.height;
+  const ctx = c.getContext('2d');
+  ctx.translate(c.width / 2, c.height / 2);
+  ctx.rotate((rot * Math.PI) / 180);
+  const f = rot === 90 || rot === 270 ? Math.min(c.width / c.height, c.height / c.width) : 1;
+  ctx.scale((opts.flipH ? -1 : 1) * f, (opts.flipV ? -1 : 1) * f);
+  ctx.drawImage(img, -c.width / 2, -c.height / 2);
+  return c.toDataURL('image/png');
+}
+
+/**
+ * 裁剪位图：按四边裁掉的百分比（0~0.9）切一块出来。
+ * 返回新的 dataURL 和宽高比，调用方按新比例改矩形，避免拉扁。
+ */
+export async function cropRaster(dataUrl, frac = {}) {
+  const img = await loadImage(dataUrl);
+  const W = img.naturalWidth || img.width;
+  const H = img.naturalHeight || img.height;
+  const f = (v) => Math.min(0.9, Math.max(0, num(v, 0)));
+  const l = f(frac.l), r = f(frac.r), t = f(frac.t), b = f(frac.b);
+  const sx = Math.round(W * l);
+  const sy = Math.round(H * t);
+  const sw = Math.max(1, Math.round(W * (1 - Math.min(0.98, l + r))));
+  const sh = Math.max(1, Math.round(H * (1 - Math.min(0.98, t + b))));
+  const c = document.createElement('canvas');
+  c.width = sw;
+  c.height = sh;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+  return { dataUrl: c.toDataURL('image/png'), ratio: sw / sh, w: sw, h: sh };
 }
 
 /**
@@ -181,13 +390,16 @@ export async function savePdf(bytes, annots = [], fields = {}, opts = {}) {
   for (const a of annots) {
     if (!pages[a.page - 1]) continue;
     if (a.type === 'textbox' || a.type === 'image' || a.type === 'sign') {
-      const dataUrl = a.type === 'textbox' ? textboxToPng(a, 3) : a.dataUrl;
+      let dataUrl = null;
+      if (a.type === 'textbox') dataUrl = textboxToPng(a, 3);
+      else dataUrl = await transformRaster(a.dataUrl, a);
       if (dataUrl) {
         // 文本框默认先在底下铺一层白，盖住被替换的原文；否则新旧文字叠在一起没法看
         if (a.type === 'textbox' && a.erase !== false) {
           const r = a.rects[0];
           pages[a.page - 1].drawRectangle({
-            x: r[0], y: r[1], width: r[2] - r[0], height: r[3] - r[1], color: rgb(1, 1, 1),
+            x: r[0], y: r[1], width: r[2] - r[0], height: r[3] - r[1],
+            color: rgb(1, 1, 1), opacity: num(a.opacity, 1) < 1 ? num(a.opacity, 1) : 1,
           });
         }
         await drawRaster(pdfDoc, pages[a.page - 1], dataUrl, a.rects[0]);

@@ -68,7 +68,22 @@ const P = {
   keyboard: '<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6"/>',
   collapse: '<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>',
   fit: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+  bold: '<path d="M7 4h6.2a3.6 3.6 0 0 1 0 7.2H7z"/><path d="M7 11.2h7a3.9 3.9 0 0 1 0 7.8H7z"/>',
+  italic: '<path d="M10 4h7M7 20h7M14.5 4L9.5 20"/>',
+  superscript: '<path d="M4 18L12 6M12 6L20 18"/><path d="M16.5 4h4v4"/>',
+  subscript: '<path d="M4 18L12 6M12 6L20 18"/><path d="M16 16h4v4"/>',
+  alignLeft: '<path d="M4 6h16M4 10h10M4 14h16M4 18h10"/>',
+  alignCenter: '<path d="M4 6h16M7 10h10M4 14h16M7 18h10"/>',
+  alignRight: '<path d="M4 6h16M10 10h10M4 14h16M10 18h10"/>',
+  alignJustify: '<path d="M4 6h16M4 10h16M4 14h16M4 18h16"/>',
+  lineHeight: '<path d="M4 5h16M4 12h16M4 19h16"/><path d="M2 8v8"/>',
+  charSpace: '<path d="M4 18V9M8 18V9"/><path d="M3 9h6"/><path d="M13 18V9M17 18V9"/><path d="M12 9h6"/><path d="M20 6v12"/>',
+  flipH: '<path d="M12 3v18"/><path d="M9 7L4 12l5 5z"/><path d="M15 7l5 5-5 5z" stroke-dasharray="3 2"/>',
+  flipV: '<path d="M3 12h18"/><path d="M7 9l5-5 5 5z"/><path d="M7 15l5 5 5-5z" stroke-dasharray="3 2"/>',
+  front: '<rect x="3" y="3" width="11" height="11" rx="1.5"/><rect x="10" y="10" width="11" height="11" rx="1.5" fill="currentColor" fill-opacity=".18"/>',
+  back: '<rect x="10" y="10" width="11" height="11" rx="1.5"/><rect x="3" y="3" width="11" height="11" rx="1.5" fill="currentColor" fill-opacity=".18"/>',
   mark: '<path d="M6 3h12v18l-6-4.5L6 21z"/><path d="M9 8h6"/>',
+  crop: '<path d="M6 2v16h16"/><path d="M2 6h16v16"/>',
 };
 
 export function icon(name, size = 18, cls = '') {
